@@ -21,6 +21,12 @@ https://github.com/user-attachments/assets/23b55a3c-6bb3-40c4-8b2e-ff0b963fa414
 
 ## What it does
 
+
+
+https://github.com/user-attachments/assets/9d5bd34f-2a6f-497f-a1dd-76bd8a68f87b
+
+
+
 **On Reddit (and Yupoo, Google Sheets, any site you add)**
 
 | You do | You get |
