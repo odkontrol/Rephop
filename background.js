@@ -1,0 +1,1336 @@
+/*
+ * RepHop service worker.
+ * The only place that writes the saved list, opens agent tabs and talks to the network.
+ * Content scripts and the side panel send messages here.
+ */
+importScripts('lib/links.js', 'lib/util.js');
+
+const L = self.RepLinks;
+const U = self.RepUtil;
+
+const DAY = 86400000;
+const SKIP = Symbol('skip-write');
+const CONTENT_FILES = ['lib/links.js', 'lib/util.js', 'content/main.js'];
+const MAX_BULK = 1500;
+
+// ------------------------------------------------------------------ storage
+
+async function get(key, fallback) {
+  const o = await chrome.storage.local.get(key);
+  return o[key] === undefined ? fallback : o[key];
+}
+
+// Every read-modify-write goes through this chain so two messages can never clobber each other.
+let chain = Promise.resolve();
+function locked(fn) {
+  const p = chain.then(fn);
+  chain = p.catch(() => {});
+  return p;
+}
+
+async function getSettings() {
+  return U.mergeSettings(await get('settings'));
+}
+
+function mutateItems(fn, opts) {
+  return locked(async () => {
+    const data = await chrome.storage.local.get(['items', 'tombstones', 'rev']);
+    const items = data.items || {};
+    const tombs = data.tombstones || {};
+    const result = await fn(items, tombs);
+    if (result === SKIP) return undefined;
+    await chrome.storage.local.set({ items, tombstones: tombs, rev: (data.rev || 0) + 1 });
+    if (!opts || opts.sync !== false) scheduleSync();
+    return result;
+  });
+}
+
+function mutate(key, fallback, fn, bump) {
+  return locked(async () => {
+    const data = await chrome.storage.local.get([key, 'rev']);
+    const value = data[key] === undefined ? fallback : data[key];
+    const result = await fn(value);
+    if (result === SKIP) return undefined;
+    const out = { [key]: value };
+    if (bump) out.rev = (data.rev || 0) + 1;
+    await chrome.storage.local.set(out);
+    return result;
+  });
+}
+
+function findKey(items, key) {
+  if (!key) return null;
+  if (items[key]) return key;
+  for (const k in items) {
+    const a = items[k].aliases;
+    if (a && a.includes(key)) return k;
+  }
+  return null;
+}
+
+function prune(map, max, stampField) {
+  const keys = Object.keys(map);
+  if (keys.length <= max) return;
+  keys.sort((a, b) => (map[a][stampField] || 0) - (map[b][stampField] || 0));
+  for (const k of keys.slice(0, keys.length - max)) delete map[k];
+}
+
+async function pool(list, size, worker) {
+  const out = new Array(list.length);
+  let next = 0;
+  const run = async () => {
+    while (next < list.length) {
+      const i = next++;
+      out[i] = await worker(list[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(size, list.length) }, run));
+  return out;
+}
+
+// ------------------------------------------------------------------ network
+
+async function fetchPage(url, maxChars) {
+  const res = await fetch(url, { credentials: 'omit', redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+  if (!res.ok) {
+    const err = new Error('HTTP ' + res.status);
+    err.status = res.status;
+    throw err;
+  }
+  const text = await res.text();
+  return { url: res.url, text: text.slice(0, maxChars) };
+}
+
+/**
+ * Weidian rejects cross-origin API calls and Yupoo refuses to serve pictures without its own
+ * referer, so two header rules cover exactly those requests and nothing else.
+ */
+async function setupNetRules() {
+  const rules = [
+    {
+      id: 1,
+      priority: 1,
+      action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Origin', operation: 'remove' }, { header: 'Referer', operation: 'set', value: 'https://weidian.com/' }] },
+      condition: { requestDomains: ['thor.weidian.com'], initiatorDomains: [chrome.runtime.id], resourceTypes: ['xmlhttprequest'] },
+    },
+    {
+      id: 2,
+      priority: 1,
+      action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Referer', operation: 'set', value: 'https://x.yupoo.com/' }] },
+      condition: { requestDomains: ['photo.yupoo.com'], resourceTypes: ['image'] },
+    },
+  ];
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2], addRules: rules });
+  } catch (e) {
+    console.warn('RepHop: header rules not installed', e);
+  }
+}
+
+/** Name, price, picture and stock from Weidian's item API. This endpoint is quick and tolerant, so previews use it. */
+async function fetchWeidian(id) {
+  const url = 'https://thor.weidian.com/detail/getItemSkuInfo/1.0?param=' + encodeURIComponent(JSON.stringify({ itemId: String(id) }));
+  const res = await fetch(url, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const j = await res.json();
+  if (!j || !j.status || j.status.code !== 0) throw new Error((j && j.status && j.status.message) || 'Weidian API error');
+  const r = j.result || {};
+  if (!r.itemTitle) return { state: 'gone' };
+  const cents = r.itemDiscountLowPrice != null ? r.itemDiscountLowPrice : r.itemOriginalLowPrice;
+  const out = { state: r.itemStock === 0 ? 'soldout' : 'ok', title: String(r.itemTitle).trim(), image: r.itemMainPic || '' };
+  if (typeof cents === 'number' && cents > 0) out.price = cents / 100;
+  return out;
+}
+
+// ---------------------------------------------------- shop + English name
+// The item page knows two things the API does not: which shop sells the item, and a translated name.
+// Weidian cuts off clients that load many item pages in a row, so this runs only for items you have
+// saved, one at a time with a pause in between, a cap per session, and a long break after any refusal.
+
+const ENRICH_GAP_MS = 3000;
+const ENRICH_BREAK_MS = 30 * 60000;
+const ENRICH_MAX_PER_SESSION = 60;
+const enrichQueue = [];
+let enrichRunning = false;
+
+function queueEnrich(key) {
+  if (!key.startsWith('weidian:') || enrichQueue.includes(key) || enrichQueue.length >= 40) return;
+  enrichQueue.push(key);
+  if (enrichRunning) return;
+  enrichRunning = true;
+  (async () => {
+    while (enrichQueue.length) {
+      const next = enrichQueue.shift();
+      const ran = await enrichOne(next).catch(() => false);
+      if (ran) await new Promise((r) => setTimeout(r, ENRICH_GAP_MS));
+    }
+  })().finally(() => (enrichRunning = false));
+}
+
+/** Returns true if a request was made (so the caller should wait before the next one). */
+async function enrichOne(key) {
+  const item = L.keyToItem(key);
+  const items = await get('items', {});
+  const saved = items[findKey(items, key)];
+  if (!item || !saved || saved.platform !== 'weidian') return false;
+  const known = (await get('previews', {}))[key] || {};
+  if (known.pageAt && Date.now() - known.pageAt < 7 * DAY) return false;
+  const st = await chrome.storage.session.get(['enrichPausedUntil', 'enrichCount']);
+  if ((st.enrichPausedUntil || 0) > Date.now() || (st.enrichCount || 0) >= ENRICH_MAX_PER_SESSION) return false;
+  await chrome.storage.session.set({ enrichCount: (st.enrichCount || 0) + 1 });
+  let page;
+  try {
+    page = U.parseWeidianPage((await fetchPage('https://weidian.com/item.html?itemID=' + item.id, 400000)).text);
+  } catch (_) {
+    // Refused or unreachable: stop asking for a good while rather than make it worse.
+    await chrome.storage.session.set({ enrichPausedUntil: Date.now() + ENRICH_BREAK_MS });
+    enrichQueue.length = 0;
+    return true;
+  }
+  const patch = { pageAt: Date.now() };
+  if (page && page.gone) patch.state = 'gone';
+  if (page && page.name) patch.titleEn = page.name;
+  if (page && page.seller) patch.seller = page.seller;
+  if (page && page.image && !known.image) patch.image = page.image;
+  await savePreview(key, patch);
+  return true;
+}
+
+function metaContent(html, prop) {
+  const a = html.match(new RegExp('<meta[^>]+property=["\']' + prop + '["\'][^>]*content=["\']([^"\']*)["\']', 'i'));
+  const b = a || html.match(new RegExp('<meta[^>]+content=["\']([^"\']*)["\'][^>]*property=["\']' + prop + '["\']', 'i'));
+  return b ? U.decodeEntities(b[1]).trim() : '';
+}
+
+function yupooMeta(html, album) {
+  const full = metaContent(html, 'og:title');
+  const title = full.split(/\s\|\s/)[0].replace(/\s+/g, ' ').trim();
+  const meta = { seller: { key: 'yupoo:' + album.user, name: album.user } };
+  if (title) meta.title = title.slice(0, 140);
+  const price = U.parsePrice(title);
+  if (price) meta.price = price;
+  const image = metaContent(html, 'og:image');
+  if (/^https?:\/\//.test(image)) meta.image = image;
+  return meta;
+}
+
+/** Buy links a seller put on an album: the description first, then any outbound link on the page. */
+function yupooBuyLinks(html) {
+  const out = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const p = L.parseLink(U.decodeEntities(raw));
+    if (p && p.kind !== 'yupoo' && !seen.has(p.key)) {
+      seen.add(p.key);
+      out.push(p);
+    }
+  };
+  const start = html.indexOf('showalbumheader__main');
+  if (start !== -1) {
+    const head = html.slice(start, start + 9000);
+    for (const m of head.matchAll(/href=["']([^"']+)["']/g)) add(m[1]);
+    for (const hit of L.extractLinks(U.stripTags(U.decodeEntities(head)))) if (hit.parsed.kind !== 'yupoo' && !seen.has(hit.parsed.key)) {
+      seen.add(hit.parsed.key);
+      out.push(hit.parsed);
+    }
+  }
+  for (const m of html.matchAll(/href=["']([^"']*\/external\?url=[^"']+)["']/g)) add(m[1]);
+  return out;
+}
+
+async function resolveShort(parsed) {
+  const page = await fetchPage(parsed.url, 400000);
+  const direct = L.parseLink(page.url);
+  if (direct && direct.kind === 'item') return { ok: true, item: direct, from: parsed };
+  const text = U.decodeEntities(page.text).replace(/\\u002F/gi, '/').replace(/\\u0026/gi, '&').replace(/\\\//g, '/');
+  for (const hit of L.extractLinks(text)) if (hit.parsed.kind === 'item') return { ok: true, item: hit.parsed, from: parsed };
+  return { ok: false, reason: 'unresolved', parsed };
+}
+
+async function resolveYupoo(album) {
+  const page = await fetchPage(album.url, 700000);
+  const meta = yupooMeta(page.text, album);
+  const candidates = yupooBuyLinks(page.text);
+  const item = candidates.find((c) => c.kind === 'item');
+  if (item) return { ok: true, item, from: album, meta };
+  for (const c of candidates) {
+    if (c.kind !== 'short') continue;
+    const r = await resolveShort(c).catch(() => null);
+    if (r && r.ok) return { ok: true, item: r.item, from: album, meta };
+  }
+  return { ok: true, item: album, from: album, meta, noBuyLink: true };
+}
+
+const inflight = new Map();
+function once(key, fn) {
+  if (inflight.has(key)) return inflight.get(key);
+  const p = fn().finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
+/**
+ * Turn any supported link into a product.
+ *   { ok: true, item, from?, meta?, noBuyLink? }  item is a marketplace product, or the album itself when it has no buy link
+ *   { ok: false, reason: 'unsupported' | 'network' | 'unresolved', parsed? }
+ */
+async function resolveLink(input, force) {
+  const parsed = typeof input === 'string' ? L.parseLink(input) : input;
+  if (!parsed) return { ok: false, reason: 'unsupported' };
+  if (parsed.kind === 'item') return { ok: true, item: parsed };
+  return once('resolve:' + parsed.key, async () => {
+    const cache = await get('resolved', {});
+    const hit = cache[parsed.key];
+    if (hit && !force && Date.now() - hit.at < (hit.key && !hit.noBuyLink ? 30 * DAY : DAY)) {
+      const item = L.keyToItem(hit.key);
+      if (item) return { ok: true, item, from: parsed, meta: hit.meta, noBuyLink: !!hit.noBuyLink, gone: !!hit.gone };
+    }
+    let out;
+    try {
+      out = parsed.kind === 'yupoo' ? await resolveYupoo(parsed) : await resolveShort(parsed);
+    } catch (e) {
+      if (parsed.kind === 'yupoo' && e && e.status === 404) {
+        // The seller deleted the album.
+        out = { ok: true, item: parsed, from: parsed, noBuyLink: true, gone: true, meta: { seller: { key: 'yupoo:' + parsed.user, name: parsed.user } } };
+      } else return { ok: false, reason: 'network', parsed, error: String((e && e.message) || e) };
+    }
+    if (out.ok) {
+      await mutate('resolved', {}, (map) => {
+        map[parsed.key] = { key: out.item.key, meta: out.meta || null, noBuyLink: !!out.noBuyLink, gone: !!out.gone, at: Date.now() };
+        prune(map, 600, 'at');
+      });
+      if (out.meta) await savePreview(parsed.key, Object.assign({ state: out.gone ? 'gone' : 'ok' }, out.meta));
+      if (parsed.kind === 'yupoo' && out.item.kind === 'item') await upgradeAlbum(parsed.key, out.item, out.meta);
+    }
+    return out;
+  });
+}
+
+// ----------------------------------------------------------------- previews
+
+async function savePreview(key, preview, opts) {
+  await mutate('previews', {}, (map) => {
+    map[key] = Object.assign({}, map[key], preview, { at: Date.now() });
+    prune(map, 800, 'at');
+  });
+  await mutateItems((items) => {
+    const k = findKey(items, key);
+    if (!k) return SKIP;
+    return applyPreview(items[k], preview, opts && opts.fresh) ? true : SKIP;
+  }, { sync: false });
+}
+
+/** Copy what we know about a listing onto a saved item. Fills gaps; a fresh fetch also updates name and price. */
+function applyPreview(it, p, fresh) {
+  if (!p) return false;
+  let changed = false;
+  const put = (field, value) => {
+    if (value != null && value !== '' && it[field] !== value) {
+      it[field] = value;
+      changed = true;
+    }
+  };
+  if (!it.title || fresh) put('title', p.title);
+  put('titleEn', p.titleEn);
+  if (!it.image) put('image', p.image);
+  if (p.seller && (!it.seller || (it.seller.key === p.seller.key && it.seller.name !== p.seller.name))) put('seller', p.seller);
+  if (typeof p.price === 'number' && !it.priceEdited && (it.price == null || fresh)) put('price', p.price);
+  if (p.state && (!it.check || it.check.state !== p.state)) {
+    it.check = { state: p.state, at: Date.now() };
+    changed = true;
+  }
+  return changed;
+}
+
+/** Title, price, picture and availability. Weidian answers directly; other sites are filled in when you visit them. */
+async function getPreview(key, force) {
+  const item = L.keyToItem(key);
+  if (!item) return null;
+  const hit = (await get('previews', {}))[key];
+  if (item.platform !== 'weidian') return hit || null;
+  if (hit && !force && Date.now() - hit.at < DAY) return hit;
+  return once('preview:' + key, async () => {
+    let p;
+    try {
+      p = await fetchWeidian(item.id);
+    } catch (_) {
+      return hit ? Object.assign({}, hit, { stale: true }) : null;
+    }
+    await savePreview(key, p, { fresh: true });
+    return Object.assign({}, hit, p, { at: Date.now() });
+  });
+}
+
+const previewQueue = [];
+let previewWorkers = 0;
+function queuePreview(key) {
+  if (!key.startsWith('weidian:') || previewQueue.includes(key)) return;
+  previewQueue.push(key);
+  while (previewWorkers < 2 && previewQueue.length) {
+    previewWorkers++;
+    (async () => {
+      while (previewQueue.length) {
+        await getPreview(previewQueue.shift()).catch(() => null);
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    })().finally(() => previewWorkers--);
+  }
+}
+
+// --------------------------------------------------------------------- tabs
+
+function isAgentPage(url, settings) {
+  const u = L.toUrl(url);
+  const a = L.toUrl(L.agentInfo(settings).template.replace(/\{[^}]+\}/g, 'x'));
+  return !!(u && a && u.hostname.replace(/^www\./, '') === a.hostname.replace(/^www\./, ''));
+}
+
+/**
+ * May we point this tab at a new listing? Only while it still shows something we put there:
+ * the last address we opened in it, or any product listing or album. A cart, a checkout, or a
+ * site we cannot see (the user took the tab elsewhere) is left alone.
+ */
+function reusable(tab, lastUrl) {
+  const url = tab.url || tab.pendingUrl || '';
+  if (!url) return false;
+  return url === lastUrl || !!L.parseLink(url);
+}
+
+// Opens run one at a time, so two quick clicks cannot both decide "there is no agent tab yet".
+let openChain = Promise.resolve();
+function openUrl(url, settings, disposition, srcTab) {
+  const p = openChain.then(() => openUrlNow(url, settings, disposition, srcTab));
+  openChain = p.catch(() => {});
+  return p;
+}
+
+async function openUrlNow(url, settings, disposition, srcTab) {
+  // disposition: 'default' follows the setting, 'reuse' forces the single tab (queue, shortcuts),
+  // 'background' is a ctrl/middle click, 'group' is "open all in tabs".
+  const background = disposition === 'background' || disposition === 'group';
+  const mode = disposition === 'group' ? 'group' : background ? (settings.openMode === 'group' ? 'group' : 'new') : disposition === 'reuse' && settings.openMode !== 'window' ? 'reuse' : settings.openMode;
+  const active = background ? false : !!settings.focusOnOpen;
+  const st = await chrome.storage.session.get(['agentTabId', 'agentTabUrl', 'agentWindowId', 'agentGroupId']);
+  const beside = srcTab ? { index: srcTab.index + 1, windowId: srcTab.windowId, openerTabId: srcTab.id } : {};
+
+  if (mode === 'reuse') {
+    let tab = st.agentTabId != null ? await chrome.tabs.get(st.agentTabId).catch(() => null) : null;
+    if (tab && !reusable(tab, st.agentTabUrl)) tab = null;
+    // Never navigate away the page the click came from, unless that page is the agent itself.
+    if (tab && srcTab && tab.id === srcTab.id && !isAgentPage(srcTab.url, settings)) tab = null;
+    if (tab) {
+      await chrome.tabs.update(tab.id, { url, active });
+      if (active) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    } else {
+      tab = await chrome.tabs.create(Object.assign({ url, active }, beside));
+    }
+    await chrome.storage.session.set({ agentTabId: tab.id, agentTabUrl: url });
+    return tab.id;
+  }
+
+  if (mode === 'window') {
+    const win = st.agentWindowId != null ? await chrome.windows.get(st.agentWindowId, { populate: true }).catch(() => null) : null;
+    if (win && win.tabs && win.tabs.length) {
+      let tab = win.tabs.find((t) => t.active) || win.tabs[0];
+      if (reusable(tab, st.agentTabUrl)) await chrome.tabs.update(tab.id, { url });
+      else tab = await chrome.tabs.create({ windowId: win.id, url, active: true });
+      if (active) await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+      await chrome.storage.session.set({ agentTabUrl: url });
+      return tab.id;
+    }
+    const cur = await (srcTab ? chrome.windows.get(srcTab.windowId) : chrome.windows.getLastFocused()).catch(() => null);
+    const width = 780;
+    const bounds = cur && cur.width ? { width, height: cur.height, top: cur.top, left: Math.max(0, cur.left + cur.width - width) } : { width };
+    let created;
+    try {
+      created = await chrome.windows.create(Object.assign({ url, type: 'normal', focused: active }, bounds));
+    } catch (_) {
+      created = await chrome.windows.create({ url, type: 'normal', focused: active });
+    }
+    await chrome.storage.session.set({ agentWindowId: created.id, agentTabUrl: url });
+    return created.tabs && created.tabs[0] ? created.tabs[0].id : null;
+  }
+
+  if (mode === 'group') {
+    const tab = await chrome.tabs.create(Object.assign({ url, active }, srcTab ? { windowId: srcTab.windowId } : {}));
+    let gid = st.agentGroupId;
+    try {
+      if (gid != null && (await chrome.tabGroups.get(gid)).windowId !== tab.windowId) gid = null;
+    } catch (_) {
+      gid = null;
+    }
+    try {
+      if (gid != null) await chrome.tabs.group({ tabIds: tab.id, groupId: gid });
+      else {
+        gid = await chrome.tabs.group({ tabIds: tab.id, createProperties: { windowId: tab.windowId } });
+        await chrome.tabGroups.update(gid, { title: L.agentInfo(settings).name, color: 'orange' });
+        await chrome.storage.session.set({ agentGroupId: gid });
+      }
+    } catch (_) {
+      /* grouping is cosmetic; the tab is already open */
+    }
+    return tab.id;
+  }
+
+  const tab = await chrome.tabs.create(Object.assign({ url, active }, beside));
+  return tab.id;
+}
+
+async function markViewed(keys) {
+  const now = Date.now();
+  await mutate('seen', {}, (seen) => {
+    for (const k of keys) if (k) seen[k] = Object.assign(seen[k] || { p: [] }, { v: now, t: now });
+    prune(seen, 4000, 't');
+  }, true);
+  await mutateItems((items) => {
+    const k = findKey(items, keys[0]);
+    if (!k) return SKIP;
+    items[k].viewedAt = now;
+    return true;
+  }, { sync: false });
+}
+
+async function openLink(msg, srcTab) {
+  const settings = await getSettings();
+  const target = msg.key ? L.keyToItem(msg.key) : msg.url;
+  if (!target) return { ok: false, reason: 'unsupported' };
+  const res = await resolveLink(target);
+  const agent = L.agentInfo(settings).name;
+  if (!res.ok) {
+    if (res.parsed && res.reason !== 'unsupported') {
+      // We could not read the link ourselves, so let the browser follow it; the page it lands on gets a RepHop button.
+      await openUrl(res.parsed.url, settings, msg.disposition, srcTab);
+      return { ok: true, fallback: true, agent, message: 'Could not read that link directly, so it was opened as-is.' };
+    }
+    return { ok: false, reason: res.reason };
+  }
+  const url = res.noBuyLink ? res.item.url : L.agentUrl(res.item, settings);
+  await openUrl(url, settings, msg.disposition, srcTab);
+  await markViewed([res.item.key, res.from && res.from.key]);
+  if (res.item.kind === 'item') queuePreview(res.item.key);
+  return { ok: true, key: res.item.key, noBuyLink: !!res.noBuyLink, agent, focused: msg.disposition !== 'background' && msg.disposition !== 'group' && settings.focusOnOpen };
+}
+
+// --------------------------------------------------------------- saved list
+
+function sameSource(a, b) {
+  return (a.commentUrl || a.postUrl || '') === (b.commentUrl || b.postUrl || '');
+}
+
+function cleanCtx(ctx) {
+  if (!ctx || typeof ctx !== 'object') return null;
+  const s = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+  const out = { site: s(ctx.site, 40), sub: s(ctx.sub, 60), postId: s(ctx.postId, 20), postTitle: s(ctx.postTitle, 200), postUrl: s(ctx.postUrl, 400), commentUrl: s(ctx.commentUrl, 400), author: s(ctx.author, 60), addedAt: Date.now() };
+  return out.postUrl || out.commentUrl ? out : null;
+}
+
+function applyMeta(it, meta) {
+  if (!meta) return;
+  if (!it.label && !it.title && meta.title) it.label = meta.title;
+  if (it.price == null && typeof meta.price === 'number') it.price = meta.price;
+  if (!it.image && meta.image) it.image = meta.image;
+  if (!it.seller && meta.seller) it.seller = meta.seller;
+}
+
+/** An album that was saved before its buy link was known becomes the real product (or merges into it). */
+function upgradeAlbum(albumKey, base, meta) {
+  return mutateItems((items, tombs) => {
+    const it = items[albumKey];
+    if (!it || it.platform !== 'yupoo' || base.platform === 'yupoo') return SKIP;
+    delete items[albumKey];
+    tombs[albumKey] = Date.now();
+    const dup = items[base.key];
+    if (dup) {
+      for (const src of it.sources || []) if (!dup.sources.some((x) => sameSource(x, src))) dup.sources.push(src);
+      if (!dup.aliases.includes(albumKey)) dup.aliases.push(albumKey);
+      if (!dup.label && it.label) dup.label = it.label;
+      if (!dup.note && it.note) dup.note = it.note;
+      dup.updatedAt = Date.now();
+    } else {
+      Object.assign(it, { key: base.key, platform: base.platform, id: base.id, url: base.url, pending: false, updatedAt: Date.now() });
+      if (!it.aliases.includes(albumKey)) it.aliases.push(albumKey);
+      items[base.key] = it;
+      delete tombs[base.key];
+      applyMeta(it, meta);
+    }
+    return true;
+  }).then(async (done) => {
+    if (!done) return false;
+    queuePreview(base.key);
+    // A running queue still lists the album under its old name.
+    await mutate('queue', null, (q) => {
+      if (!q || !Array.isArray(q.keys) || !q.keys.includes(albumKey)) return SKIP;
+      const at = q.keys.indexOf(albumKey);
+      if (q.keys.includes(base.key)) {
+        q.keys.splice(at, 1);
+        if (q.i > at) q.i--;
+        q.i = Math.max(0, Math.min(q.i, q.keys.length - 1));
+      } else q.keys[at] = base.key;
+      return true;
+    });
+    return true;
+  });
+}
+
+/** Save one or many links. entries: [{ url | key, ctx, label }] */
+async function saveEntries(entries, folder) {
+  const settings = await getSettings();
+  const list = (entries || []).slice(0, MAX_BULK);
+  const resolved = await pool(list, 4, async (e) => {
+    const target = e.key ? L.keyToItem(e.key) : e.url;
+    if (!target) return { e, r: { ok: false, reason: 'unsupported' } };
+    try {
+      return { e, r: await resolveLink(target) };
+    } catch (_) {
+      return { e, r: { ok: false, reason: 'network' } };
+    }
+  });
+
+  const stats = { ok: true, added: 0, duplicates: 0, failed: 0, noBuyLink: 0, pending: 0, keys: [], title: '' };
+  const fresh = [];
+  const previews = await get('previews', {});
+  const folders = await get('folders', U.DEFAULT_FOLDERS);
+  const dest = folder && folders.includes(folder) ? folder : folders.includes(settings.defaultFolder) ? settings.defaultFolder : folders[0] || 'Inbox';
+
+  await mutateItems((items, tombs) => {
+    for (const entry of resolved) {
+      const e = entry.e;
+      let r = entry.r;
+      if (!r.ok && r.reason === 'network' && r.parsed && r.parsed.kind === 'yupoo') {
+        // Yupoo did not answer. Keep the album so the find is not lost; its buy link is looked up again later.
+        r = { ok: true, item: r.parsed, from: r.parsed, pending: true };
+      }
+      if (!r.ok) {
+        stats.failed++;
+        stats.reason = r.reason;
+        continue;
+      }
+      const base = r.item;
+      const now = Date.now();
+      const ctx = cleanCtx(e.ctx);
+      const label = L.cleanLabel(e.label || '');
+      const existing = findKey(items, base.key) || (r.from ? findKey(items, r.from.key) : null);
+      let it = existing ? items[existing] : null;
+      if (it) {
+        if (it.platform === 'yupoo' && base.platform !== 'yupoo') {
+          // An album saved before its buy link was known: upgrade it in place.
+          delete items[existing];
+          Object.assign(it, { key: base.key, platform: base.platform, id: base.id, url: base.url, updatedAt: now });
+          if (!it.aliases.includes(existing)) it.aliases.push(existing);
+          items[it.key] = it;
+        }
+        if (ctx && !it.sources.some((s) => sameSource(s, ctx))) {
+          it.sources.push(ctx);
+          if (it.sources.length > 8) it.sources.shift();
+        }
+        if (!it.label && label) it.label = label;
+        stats.duplicates++;
+      } else {
+        it = {
+          key: base.key, platform: base.platform, id: base.id, url: base.url,
+          label, customTitle: '', title: '', price: null, image: '', seller: base.shopId ? { key: 'weidian:' + base.shopId, name: 'Weidian shop ' + base.shopId } : null,
+          note: '', tags: [], folder: dest, status: 'saved', qty: 1, sources: ctx ? [ctx] : [], aliases: [],
+          addedAt: now, updatedAt: now, viewedAt: 0, check: null,
+        };
+        items[it.key] = it;
+        delete tombs[it.key];
+        stats.added++;
+        fresh.push(it.key);
+      }
+      if (r.from && r.from.key !== it.key && !it.aliases.includes(r.from.key)) it.aliases.push(r.from.key);
+      if (r.noBuyLink) stats.noBuyLink++;
+      if (r.pending) {
+        stats.pending++;
+        it.pending = true;
+      } else if (it.pending) it.pending = false;
+      applyMeta(it, r.meta);
+      applyPreview(it, previews[it.key]);
+      for (const a of it.aliases) applyPreview(it, previews[a]);
+      stats.keys.push(it.key);
+      stats.title = U.displayTitle(it);
+    }
+    return stats.keys.length ? true : SKIP;
+  });
+
+  for (const k of fresh.slice(0, 60)) queuePreview(k);
+  for (const k of fresh.slice(0, 12)) queueEnrich(k);
+  if ((entries || []).length > MAX_BULK) stats.truncated = (entries || []).length - MAX_BULK;
+  if (stats.added) flashBadge('+' + stats.added);
+  return stats;
+}
+
+const EDITABLE = ['customTitle', 'label', 'note', 'tags', 'folder', 'status', 'qty', 'price'];
+
+function updateItems(keys, patch) {
+  return mutateItems((items) => {
+    let n = 0;
+    for (const key of keys) {
+      const it = items[key];
+      if (!it) continue;
+      for (const f of EDITABLE) {
+        if (!(f in patch)) continue;
+        let v = patch[f];
+        if (f === 'tags') v = U.normalizeTags(v);
+        if (f === 'qty') v = Math.max(1, Math.min(99, parseInt(v, 10) || 1));
+        if (f === 'price') {
+          v = v === '' || v == null ? null : Number(v);
+          if (v != null && !(v >= 0 && v < 1e7)) continue;
+          it.priceEdited = v != null;
+        }
+        if (f === 'status' && !U.STATUSES[v]) continue;
+        if (typeof v === 'string') v = v.slice(0, f === 'note' ? 2000 : 200);
+        it[f] = v;
+      }
+      if (patch.addTags) it.tags = U.normalizeTags((it.tags || []).concat(patch.addTags));
+      // Text typed on this device is complete again, whatever sync delivered earlier.
+      if ('note' in patch && it.cut) it.cut &= ~U.CUT_NOTE;
+      if (('customTitle' in patch || 'label' in patch) && it.cut) it.cut &= ~U.CUT_NAME;
+      if (!it.cut) delete it.cut;
+      it.updatedAt = Date.now();
+      n++;
+    }
+    return n ? { ok: true, count: n } : SKIP;
+  });
+}
+
+function removeItems(keys) {
+  return mutateItems((items, tombs) => {
+    const removed = [];
+    for (const key of keys) {
+      if (!items[key]) continue;
+      removed.push(items[key]);
+      delete items[key];
+      tombs[key] = Date.now();
+    }
+    for (const k in tombs) if (Date.now() - tombs[k] > 45 * DAY) delete tombs[k];
+    return removed.length ? { ok: true, removed } : SKIP;
+  });
+}
+
+/** Rebuild an item from untrusted data (a backup file, an undo payload). Returns null if it cannot be one. */
+function sanitizeItem(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.key !== 'string') return null;
+  const base = L.keyToItem(raw.key);
+  if (!base) return null;
+  const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const num = (v) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
+  const it = {
+    key: base.key, platform: base.platform, id: base.id, url: base.url,
+    label: str(raw.label, 200), customTitle: str(raw.customTitle, 200), title: str(raw.title, 200), titleEn: str(raw.titleEn, 200),
+    price: typeof raw.price === 'number' && isFinite(raw.price) && raw.price >= 0 && raw.price < 1e7 ? raw.price : null,
+    image: /^https:\/\//.test(str(raw.image, 500)) ? str(raw.image, 500) : '',
+    seller: raw.seller && typeof raw.seller === 'object' && typeof raw.seller.key === 'string' && raw.seller.key
+      ? { key: raw.seller.key.slice(0, 80), name: str(raw.seller.name, 60) || raw.seller.key.slice(0, 60) } : null,
+    note: str(raw.note, 2000), tags: U.normalizeTags(Array.isArray(raw.tags) ? raw.tags.filter((t) => typeof t === 'string') : []),
+    folder: str(raw.folder, 30).trim() || 'Inbox', status: U.STATUSES[raw.status] ? raw.status : 'saved',
+    qty: Math.max(1, Math.min(99, parseInt(raw.qty, 10) || 1)),
+    sources: Array.isArray(raw.sources) ? raw.sources.map(cleanCtx).filter(Boolean).slice(0, 8) : [],
+    aliases: Array.isArray(raw.aliases) ? raw.aliases.filter((a) => typeof a === 'string' && L.keyToItem(a)).slice(0, 5) : [],
+    addedAt: num(raw.addedAt) || Date.now(), updatedAt: num(raw.updatedAt) || Date.now(), viewedAt: num(raw.viewedAt),
+    check: raw.check && typeof raw.check === 'object' && ['ok', 'soldout', 'gone'].includes(raw.check.state) ? { state: raw.check.state, at: num(raw.check.at) } : null,
+  };
+  if (raw.priceEdited === true && it.price != null) it.priceEdited = true;
+  if (raw.pending === true && it.platform === 'yupoo') it.pending = true;
+  if (raw.cut === 1 || raw.cut === 2 || raw.cut === 3) it.cut = raw.cut;
+  return it;
+}
+
+/** Put back items (undo delete, import). Existing items win unless the incoming copy is newer and `preferIncoming` is set. */
+function restoreItems(list, preferIncoming) {
+  return mutateItems((items, tombs) => {
+    let n = 0;
+    for (const raw of Array.isArray(list) ? list.slice(0, 5000) : []) {
+      const it = sanitizeItem(raw);
+      if (!it) continue;
+      const cur = items[it.key];
+      if (cur && !(preferIncoming && it.updatedAt > (cur.updatedAt || 0))) continue;
+      for (const s of it.sources) s.addedAt = it.addedAt;
+      items[it.key] = it;
+      delete tombs[it.key];
+      n++;
+    }
+    return n ? { ok: true, count: n } : SKIP;
+  }).then(async (r) => {
+    await ensureFolders();
+    return r || { ok: true, count: 0 };
+  });
+}
+
+/** Make sure every folder an item sits in exists in the folder list. */
+function ensureFolders() {
+  return locked(async () => {
+    const data = await chrome.storage.local.get(['items', 'folders']);
+    const folders = (data.folders || U.DEFAULT_FOLDERS).slice();
+    let changed = !data.folders;
+    for (const it of Object.values(data.items || {})) {
+      if (it.folder && !folders.includes(it.folder)) {
+        folders.push(it.folder);
+        changed = true;
+      }
+    }
+    if (changed) await chrome.storage.local.set({ folders });
+  });
+}
+
+async function setFolders(list, renames) {
+  const clean = [];
+  for (const f of list || []) {
+    const name = String(f).trim().slice(0, 30);
+    if (name && !clean.includes(name)) clean.push(name);
+  }
+  if (!clean.length) clean.push('Inbox');
+  await locked(() => chrome.storage.local.set({ folders: clean }));
+  await mutateItems((items) => {
+    let n = 0;
+    for (const it of Object.values(items)) {
+      const to = renames && renames[it.folder] ? renames[it.folder] : clean.includes(it.folder) ? null : clean[0];
+      if (to && to !== it.folder) {
+        it.folder = to;
+        it.updatedAt = Date.now();
+        n++;
+      }
+    }
+    return n ? true : SKIP;
+  });
+  return { ok: true, folders: clean };
+}
+
+// -------------------------------------------------- lookups for page badges
+
+async function lookup(keys) {
+  const data = await chrome.storage.local.get(['items', 'seen', 'sellers', 'previews']);
+  const items = data.items || {};
+  const seen = data.seen || {};
+  const sellers = data.sellers || {};
+  const previews = data.previews || {};
+  const alias = {};
+  for (const k in items) for (const a of items[k].aliases || []) alias[a] = k;
+  const out = {};
+  for (const key of (keys || []).slice(0, 800)) {
+    const ik = items[key] ? key : alias[key];
+    const it = ik ? items[ik] : null;
+    const s = seen[key] || (ik && seen[ik]) || null;
+    const sellerKey = it && it.seller ? it.seller.key : key.startsWith('yupoo:') ? 'yupoo:' + key.slice(6).split('/')[0] : previews[key] && previews[key].seller ? previews[key].seller.key : null;
+    const info = {};
+    if (it) {
+      info.saved = true;
+      info.itemKey = ik;
+      if (it.status !== 'saved') info.status = it.status;
+      if (it.check && it.check.state !== 'ok') info.state = it.check.state;
+    }
+    if ((it && it.viewedAt) || (s && s.v)) info.viewed = true;
+    if (s && s.p && s.p.length > 1) info.mentions = s.p.length;
+    if (sellerKey && sellers[sellerKey] && sellers[sellerKey].trusted) info.trusted = true;
+    if (Object.keys(info).length) out[key] = info;
+  }
+  return out;
+}
+
+function recordSeen(entries) {
+  return mutate('seen', {}, (seen) => {
+    let changed = false;
+    const now = Date.now();
+    for (const e of (entries || []).slice(0, 400)) {
+      if (!e || typeof e.key !== 'string' || typeof e.postId !== 'string' || !e.postId) continue;
+      const s = seen[e.key] || (seen[e.key] = { p: [] });
+      if (!s.p.includes(e.postId)) {
+        s.p.push(e.postId);
+        if (s.p.length > 30) s.p.shift();
+        s.t = now;
+        changed = true;
+      }
+    }
+    if (!changed) return SKIP;
+    prune(seen, 4000, 't');
+    return true;
+  }, true);
+}
+
+/** Everything the hover card shows about a link. */
+async function describe(msg) {
+  const target = msg.key ? L.keyToItem(msg.key) : L.parseLink(msg.url);
+  if (!target) return { ok: false, reason: 'unsupported' };
+  const res = await resolveLink(target);
+  if (!res.ok) return { ok: false, reason: res.reason, kind: target.kind };
+  const key = res.item.key;
+  const [preview, info, items] = await Promise.all([getPreview(key), lookup([key, target.key]), get('items', {})]);
+  const it = items[findKey(items, key)] || null;
+  const p = Object.assign({}, res.meta, preview || {});
+  return {
+    ok: true, key, platform: res.item.platform, noBuyLink: !!res.noBuyLink,
+    title: (it && U.displayTitle(it)) || p.titleEn || p.title || '', subtitle: it && it.title && U.displayTitle(it) !== it.title ? it.title : '',
+    price: it && it.price != null ? it.price : typeof p.price === 'number' ? p.price : null,
+    image: (it && it.image) || p.image || '', state: p.state || '',
+    seller: (it && it.seller) || p.seller || null, info: Object.assign({}, info[target.key], info[key]),
+  };
+}
+
+// -------------------------------------------------------------------- queue
+
+async function queueOp(msg, srcTab) {
+  const settings = await getSettings();
+  let q = await get('queue', null);
+  if (msg.op === 'start') {
+    const keys = (msg.keys || []).filter((k) => L.keyToItem(k));
+    if (!keys.length) return { ok: false, reason: 'empty' };
+    q = { keys, i: 0, active: true };
+  } else if (!q || !q.active) {
+    return { ok: false, reason: 'no-queue' };
+  } else if (msg.op === 'stop') {
+    await locked(() => chrome.storage.local.set({ queue: { keys: [], i: 0, active: false } }));
+    return { ok: true, stopped: true };
+  } else if (msg.op === 'step') {
+    const next = q.i + (msg.delta || 1);
+    if (next < 0) return { ok: true, edge: 'start', queue: q };
+    if (next >= q.keys.length) {
+      await locked(() => chrome.storage.local.set({ queue: { keys: [], i: 0, active: false } }));
+      return { ok: true, finished: true };
+    }
+    q.i = next;
+  } else if (msg.op === 'goto') {
+    q.i = Math.max(0, Math.min(q.keys.length - 1, msg.i | 0));
+  }
+  await locked(() => chrome.storage.local.set({ queue: q }));
+  const r = await openLink({ key: q.keys[q.i], disposition: 'reuse' }, srcTab);
+  return { ok: r.ok, queue: q, reason: r.reason };
+}
+
+// -------------------------------------------------------------------- rates
+
+async function ensureRates(force) {
+  const cur = await get('rates', null);
+  if (cur && !force && Date.now() - cur.at < DAY) return cur;
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/CNY', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    const j = await res.json();
+    if (j && j.result === 'success' && j.rates && j.rates.USD) {
+      const rates = { at: Date.now(), live: true, rates: j.rates };
+      await locked(() => chrome.storage.local.set({ rates }));
+      return rates;
+    }
+  } catch (_) {
+    /* offline: fall through to whatever we have */
+  }
+  return cur || { at: 0, live: false, rates: U.FALLBACK_RATES };
+}
+
+// --------------------------------------------------------------------- sync
+
+function scheduleSync() {
+  chrome.alarms.create('rh-sync', { delayInMinutes: 0.5 });
+}
+
+function readRemote(all) {
+  const n = (all.rh_meta && all.rh_meta.n) || 0;
+  const chunks = [];
+  for (let i = 0; i < n; i++) if (all['rh_i' + i] != null) chunks.push(all['rh_i' + i]);
+  return U.unpackSync(chunks);
+}
+
+async function syncPull() {
+  const all = await chrome.storage.sync.get(null);
+  const remote = readRemote(all);
+  const fresh = [];
+  if (remote.length) {
+    await mutateItems((items, tombs) => {
+      const before = new Set(Object.keys(items));
+      if (!U.mergeSync(items, tombs, remote)) return SKIP;
+      for (const k of Object.keys(items)) if (!before.has(k)) fresh.push(k);
+      return true;
+    }, { sync: false });
+  }
+  if (all.rh_sellers && typeof all.rh_sellers === 'object') {
+    await mutate('sellers', {}, (sellers) => {
+      let changed = false;
+      for (const [k, v] of Object.entries(all.rh_sellers)) {
+        if (!v || typeof v !== 'object' || ((sellers[k] && sellers[k].m) || 0) >= (v.m || 0)) continue;
+        sellers[k] = { name: String(v.n || '').slice(0, 60), trusted: !!v.t, m: v.m || 0 };
+        changed = true;
+      }
+      return changed ? true : SKIP;
+    }, true);
+  }
+  await ensureFolders();
+  fresh.slice(0, 60).forEach(queuePreview);
+  return all;
+}
+
+function syncProblem(e) {
+  const msg = String((e && e.message) || e);
+  if (/quota/i.test(msg)) return 'Your list is too big for browser sync right now. Deleting old items or shortening long notes will make room.';
+  if (/MAX_WRITE|rate|throttl/i.test(msg)) return 'The browser is limiting how often sync can write. It will try again shortly.';
+  return 'Browser sync is not available right now (' + msg.slice(0, 80) + ').';
+}
+
+/** Merge what other devices wrote, then write ours if we hold anything newer. `force` writes regardless (Sync now). */
+async function syncPush(force) {
+  const settings = await getSettings();
+  if (!settings.sync) return { ok: false, reason: 'off' };
+  try {
+    let all = await syncPull();
+    const data = await chrome.storage.local.get(['items', 'tombstones', 'sellers']);
+    const sellers = {};
+    for (const [k, v] of Object.entries(data.sellers || {}).slice(0, 80)) sellers[k] = { n: v.name || '', t: v.trusted ? 1 : 0, m: v.m || 0 };
+    const remoteSellers = all.rh_sellers || {};
+    const sellersNewer = Object.entries(sellers).some(([k, v]) => !remoteSellers[k] || (remoteSellers[k].m || 0) < v.m);
+
+    let packed = null;
+    let written = false;
+    // If a write is refused for size, pack into smaller pieces and try once more.
+    for (const chunkBytes of [6800, 4200]) {
+      packed = U.packSync(data.items || {}, data.tombstones || {}, { chunkBytes });
+      if (!force && !sellersNewer && !U.needsPush(packed.kept, readRemote(all))) break;
+      const want = { rh_meta: { n: packed.chunks.length, dropped: packed.dropped, v: 2 }, rh_sellers: sellers };
+      packed.chunks.forEach((c, i) => (want['rh_i' + i] = c));
+      const toSet = {};
+      for (const [k, v] of Object.entries(want)) if (JSON.stringify(all[k]) !== JSON.stringify(v)) toSet[k] = v;
+      const stale = Object.keys(all).filter((k) => /^rh_i\d+$/.test(k) && !(k in want));
+      try {
+        if (stale.length) await chrome.storage.sync.remove(stale);
+        if (Object.keys(toSet).length) await chrome.storage.sync.set(toSet);
+        written = true;
+        break;
+      } catch (e) {
+        if (!/quota/i.test(String((e && e.message) || e)) || chunkBytes === 4200) throw e;
+        all = await chrome.storage.sync.get(null);
+      }
+    }
+    const state = { at: Date.now(), count: packed.count, dropped: packed.dropped, error: '' };
+    await locked(() => chrome.storage.local.set({ syncState: state }));
+    return { ok: true, state, written };
+  } catch (e) {
+    const state = { at: Date.now(), count: 0, dropped: 0, error: syncProblem(e) };
+    await locked(() => chrome.storage.local.set({ syncState: state }));
+    return { ok: false, reason: state.error };
+  }
+}
+
+// ---------------------------------------------------------------- UI helpers
+
+let badgeTimer = null;
+function flashBadge(text) {
+  chrome.action.setBadgeBackgroundColor({ color: '#16a34a' });
+  chrome.action.setBadgeText({ text });
+  clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(() => chrome.action.setBadgeText({ text: '' }), 2500);
+}
+
+async function toast(tabId, text, kind) {
+  if (tabId == null) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'toast', text, kind: kind || 'ok' });
+  } catch (_) {
+    flashBadge(kind === 'error' ? '!' : '✓');
+  }
+}
+
+const describeSave = U.describeSave;
+
+async function buildMenus() {
+  const agent = L.agentInfo(await getSettings()).name;
+  const hosts = ['weidian.com', 'taobao.com', 'tmall.com', '1688.com', 'yupoo.com'].concat(L.AGENT_HOSTS, L.SHORT_HOSTS);
+  const patterns = [];
+  for (const h of hosts) patterns.push('*://' + h + '/*', '*://*.' + h + '/*');
+  await chrome.contextMenus.removeAll();
+  chrome.contextMenus.create({ id: 'rh-open', title: 'Open in ' + agent, contexts: ['link'], targetUrlPatterns: patterns });
+  chrome.contextMenus.create({ id: 'rh-save', title: 'Save to RepHop list', contexts: ['link'], targetUrlPatterns: patterns });
+  chrome.contextMenus.create({ id: 'rh-qc', title: 'Find QC photos', contexts: ['link'], targetUrlPatterns: patterns });
+  chrome.contextMenus.create({ id: 'rh-selection', title: 'Save links in selection to RepHop', contexts: ['selection'] });
+  chrome.contextMenus.create({ id: 'rh-page', title: 'Grab every rep link on this page', contexts: ['page', 'action'] });
+}
+
+/** Collect links from a tab: ask our content script first, fall back to a one-off scrape (needs activeTab). */
+async function grabTab(tab) {
+  try {
+    const r = await chrome.tabs.sendMessage(tab.id, { type: 'grabAll' });
+    if (r && r.handled) return;
+  } catch (_) {
+    /* no content script on this site */
+  }
+  let found = [];
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        links: Array.from(document.querySelectorAll('a[href]')).slice(0, 5000).map((a) => ({ url: a.href, label: (a.textContent || '').trim().slice(0, 120) })),
+        text: (document.body ? document.body.innerText : '').slice(0, 400000),
+      }),
+    });
+    const ctx = { site: U.hostOf(tab.url), postTitle: tab.title || '', postUrl: tab.url || '' };
+    const seen = new Set();
+    for (const l of res.result.links) {
+      const p = L.parseLink(l.url);
+      if (p && !seen.has(p.key)) {
+        seen.add(p.key);
+        found.push({ url: l.url, label: l.label, ctx });
+      }
+    }
+    for (const h of L.extractLabeled(res.result.text)) {
+      if (!seen.has(h.parsed.key)) {
+        seen.add(h.parsed.key);
+        found.push({ url: h.raw, label: h.label, ctx });
+      }
+    }
+  } catch (_) {
+    flashBadge('!');
+    return;
+  }
+  if (!found.length) return flashBadge('0');
+  const stats = await saveEntries(found);
+  flashBadge(stats.added ? '+' + stats.added : '✓');
+}
+
+async function currentTab() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return tab || null;
+}
+
+async function registerExtraSites() {
+  const settings = await getSettings();
+  const matches = [];
+  for (const site of settings.extraSites) {
+    const host = String(site).trim().toLowerCase();
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) continue;
+    const origins = ['*://' + host + '/*', '*://*.' + host + '/*'];
+    if (await chrome.permissions.contains({ origins }).catch(() => false)) matches.push(...origins);
+  }
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: ['rh-extra'] }).catch(() => {});
+    if (matches.length) await chrome.scripting.registerContentScripts([{ id: 'rh-extra', matches, js: CONTENT_FILES, runAt: 'document_idle' }]);
+  } catch (e) {
+    console.warn('RepHop: extra sites not registered', e);
+  }
+}
+
+// ----------------------------------------------------------------- messages
+
+/** The list lives in the side panel; browsers without one get it in a normal tab. */
+function openList(tab) {
+  if (chrome.sidePanel && chrome.sidePanel.open) return chrome.sidePanel.open({ tabId: tab.id });
+  return chrome.tabs.create({ url: chrome.runtime.getURL('panel/panel.html'), index: tab.index + 1 });
+}
+
+function setupPanel() {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+}
+
+const handlers = {
+  open: (m, s) => openLink(m, s.tab),
+  save: (m) => saveEntries([{ url: m.url, key: m.key, ctx: m.ctx, label: m.label }], m.folder).then((st) => Object.assign(st, { ok: st.keys.length > 0, key: st.keys[0], message: describeSave(st) })),
+  saveMany: (m) => saveEntries(m.entries, m.folder).then((st) => Object.assign(st, { message: describeSave(st) })),
+  describe: (m) => describe(m),
+  lookup: (m) => lookup(m.keys),
+  seen: (m) => recordSeen(m.entries).then(() => ({ ok: true })),
+  update: (m) => updateItems(m.keys || [m.key], m.patch || {}).then((r) => r || { ok: true, count: 0 }),
+  remove: (m) => removeItems(m.keys || [m.key]).then((r) => r || { ok: true, removed: [] }),
+  restore: (m) => restoreItems(m.items, false),
+  importData: async (m) => {
+    const d = m.data || {};
+    if (Array.isArray(d.folders)) {
+      const cur = await get('folders', U.DEFAULT_FOLDERS);
+      await setFolders(cur.concat(d.folders));
+    }
+    const r = await restoreItems(Array.isArray(d.items) ? d.items : Object.values(d.items || {}), true);
+    if (d.sellers && typeof d.sellers === 'object') {
+      await mutate('sellers', {}, (sellers) => {
+        for (const [k, v] of Object.entries(d.sellers).slice(0, 200)) if (v && !sellers[k]) sellers[k] = { name: String(v.name || '').slice(0, 60), trusted: !!v.trusted, m: Date.now() };
+      }, true);
+    }
+    return r;
+  },
+  folders: (m) => setFolders(m.list, m.renames),
+  seller: (m) =>
+    mutate('sellers', {}, (sellers) => {
+      sellers[m.key] = { name: String(m.name || (sellers[m.key] && sellers[m.key].name) || '').slice(0, 60), trusted: !!m.trusted, m: Date.now() };
+    }, true).then(() => {
+      scheduleSync();
+      return { ok: true };
+    }),
+  settings: async (m) => {
+    let next;
+    await locked(async () => {
+      next = U.mergeSettings(Object.assign(await get('settings', {}), m.patch || {}));
+      await chrome.storage.local.set({ settings: next });
+    });
+    if (m.patch && ('agent' in m.patch || 'customName' in m.patch || 'customTemplate' in m.patch)) await buildMenus();
+    if (m.patch && 'extraSites' in m.patch) await registerExtraSites();
+    if (m.patch && m.patch.sync) await syncPush(true);
+    return { ok: true, settings: next };
+  },
+  queue: (m, s) => queueOp(m, s.tab),
+  refresh: async (m) => {
+    // Weidian items are asked directly; Yupoo albums are re-read (a deleted album answers 404).
+    // Taobao and 1688 have no public lookup, so those are reported as skipped.
+    const all = (m.keys || []).slice(0, 400);
+    const keys = all.filter((k) => k.startsWith('weidian:') || k.startsWith('yupoo:'));
+    const res = await pool(keys, 2, async (k) => {
+      if (k.startsWith('weidian:')) return getPreview(k, true).catch(() => null);
+      const r = await resolveLink(L.keyToItem(k), true).catch(() => null);
+      return !r || !r.ok ? null : { state: r.gone ? 'gone' : 'ok' };
+    });
+    const out = { ok: true, checked: keys.length, skipped: (m.keys || []).length - keys.length, live: 0, soldout: 0, gone: 0, unknown: 0 };
+    for (const p of res) {
+      if (!p || p.stale) out.unknown++;
+      else if (p.state === 'gone') out.gone++;
+      else if (p.state === 'soldout') out.soldout++;
+      else out.live++;
+    }
+    return out;
+  },
+  pagePatch: async (m) => {
+    if (!L.keyToItem(m.key)) return { ok: false };
+    const p = { state: 'ok' };
+    if (typeof m.title === 'string' && m.title.trim()) p.title = m.title.trim().slice(0, 200);
+    if (typeof m.price === 'number' && m.price > 0) p.price = m.price;
+    if (typeof m.image === 'string' && /^https:\/\//.test(m.image)) p.image = m.image.slice(0, 500);
+    if (m.seller && typeof m.seller.name === 'string' && m.seller.name.trim()) p.seller = { key: 'shop:' + m.seller.name.trim().toLowerCase().slice(0, 60), name: m.seller.name.trim().slice(0, 60) };
+    await savePreview(m.key, p);
+    await markViewed([m.key]);
+    return { ok: true };
+  },
+  recheck: async (m) => {
+    const album = L.keyToItem(m.key);
+    if (!album || album.kind !== 'yupoo') return { ok: false, reason: 'unsupported' };
+    const r = await resolveLink(album, true);
+    if (!r.ok) return { ok: false, reason: r.reason };
+    if (r.noBuyLink) {
+      await mutateItems((items) => {
+        if (!items[m.key] || !items[m.key].pending) return SKIP;
+        items[m.key].pending = false;
+        applyMeta(items[m.key], r.meta);
+        return true;
+      }, { sync: false });
+    }
+    return { ok: true, noBuyLink: !!r.noBuyLink, key: r.item.key };
+  },
+  needPreviews: (m) => {
+    (m.keys || []).slice(0, 40).forEach(queuePreview);
+    (m.enrich || []).slice(0, 6).forEach(queueEnrich);
+    return { ok: true };
+  },
+  rates: (m) => ensureRates(m.force),
+  syncNow: () => syncPush(true),
+  clearHistory: async () => {
+    // Everything RepHop remembers besides the list itself: viewed marks, "seen in posts", cached previews and lookups.
+    await locked(async () => {
+      const rev = await get('rev', 0);
+      await chrome.storage.local.remove(['seen', 'previews', 'resolved']);
+      await chrome.storage.local.set({ rev: rev + 1 });
+    });
+    await mutateItems((items) => {
+      let n = 0;
+      for (const it of Object.values(items)) {
+        if (!it.viewedAt) continue;
+        it.viewedAt = 0;
+        n++;
+      }
+      return n ? true : SKIP;
+    }, { sync: false });
+    return { ok: true };
+  },
+  openTab: async (m) => {
+    // Only for our own "original link" / QC buttons: a plain new tab, http(s) only.
+    const u = L.toUrl(m.url);
+    if (!u) return { ok: false };
+    await chrome.tabs.create({ url: u.href, active: m.active !== false });
+    return { ok: true };
+  },
+};
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || sender.id !== chrome.runtime.id) return false;
+  if (msg.type === 'openPanel') {
+    // Must run synchronously: the browser only allows this while the page click is still "the current gesture".
+    if (!sender.tab) return false;
+    openList(sender.tab).then(() => sendResponse({ ok: true }), (e) => sendResponse({ ok: false, reason: 'error', error: String((e && e.message) || e) }));
+    return true;
+  }
+  const fn = handlers[msg.type];
+  if (!fn) return false;
+  Promise.resolve()
+    .then(() => fn(msg, sender))
+    .then(sendResponse, (e) => sendResponse({ ok: false, reason: 'error', error: String((e && e.message) || e) }));
+  return true;
+});
+
+// ------------------------------------------------------------------- events
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  await setupNetRules();
+  await buildMenus();
+  await ensureFolders();
+  await registerExtraSites();
+  setupPanel();
+  chrome.alarms.create('rh-rates', { periodInMinutes: 720 });
+  ensureRates();
+  if (details.reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('panel/panel.html?view=help') });
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await setupNetRules();
+  setupPanel();
+  ensureRates();
+  if ((await getSettings()).sync) scheduleSync();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'rh-sync') syncPush();
+  if (alarm.name === 'rh-rates') ensureRates(true);
+});
+
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'sync') return;
+  if (!Object.keys(changes).some((k) => k.startsWith('rh_'))) return;
+  if (!(await getSettings()).sync) return;
+  // Take in the other device's changes, then check (after the usual delay) whether we hold anything it lacks.
+  await syncPull().catch(() => {});
+  scheduleSync();
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const ctx = tab ? { site: U.hostOf(tab.url), postTitle: tab.title || '', postUrl: info.pageUrl || tab.url || '' } : null;
+  if (info.menuItemId === 'rh-open') {
+    const r = await openLink({ url: info.linkUrl }, tab);
+    if (!r.ok) toast(tab && tab.id, "That link isn't a product RepHop can read.", 'error');
+  } else if (info.menuItemId === 'rh-save') {
+    const st = await saveEntries([{ url: info.linkUrl, ctx, label: info.selectionText || '' }]);
+    toast(tab && tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');
+  } else if (info.menuItemId === 'rh-qc') {
+    const res = await resolveLink(info.linkUrl);
+    const url = res.ok ? L.qcUrl(res.item, await getSettings()) : null;
+    if (url) chrome.tabs.create({ url, index: tab ? tab.index + 1 : undefined });
+    else toast(tab && tab.id, 'QC lookup needs a Weidian, Taobao or 1688 item.', 'error');
+  } else if (info.menuItemId === 'rh-selection') {
+    const entries = L.extractLabeled(info.selectionText || '').map((h) => ({ url: h.raw, label: h.label, ctx }));
+    const st = entries.length ? await saveEntries(entries) : { added: 0, duplicates: 0, failed: 1, keys: [] };
+    toast(tab && tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');
+  } else if (info.menuItemId === 'rh-page' && tab) {
+    grabTab(tab);
+  }
+});
+
+chrome.commands.onCommand.addListener(async (command, tabArg) => {
+  const tab = tabArg || (await currentTab());
+  if (!tab) return;
+  if (command === 'open-panel') {
+    openList(tab).catch(() => {});
+    return;
+  }
+  if (command === 'grab-all') return grabTab(tab);
+  if (!tab.url || !L.parseLink(tab.url)) {
+    toast(tab.id, "This page isn't a product RepHop can read.", 'error');
+    return;
+  }
+  if (command === 'send-current') {
+    const r = await openLink({ url: tab.url, disposition: 'reuse' }, tab);
+    if (r.ok && r.noBuyLink) toast(tab.id, 'This album has no Weidian or Taobao link on it.', 'error');
+  } else if (command === 'save-current') {
+    const st = await saveEntries([{ url: tab.url, ctx: { site: U.hostOf(tab.url), postTitle: tab.title || '', postUrl: tab.url } }]);
+    toast(tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');
+  }
+});
+
+if (!chrome.sidePanel) chrome.action.onClicked.addListener((tab) => openList(tab));
+
+// The worker restarts often; session header rules survive, but re-adding them is cheap and idempotent.
+setupNetRules();

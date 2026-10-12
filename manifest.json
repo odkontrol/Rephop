@@ -1,0 +1,128 @@
+{
+  "manifest_version": 3,
+  "name": "RepHop: Rep Link Opener & Haul List",
+  "short_name": "RepHop",
+  "version": "1.0.0",
+  "description": "Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to a list instead of juggling tabs.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Open your RepHop list",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
+  },
+  "options_ui": {
+    "page": "panel/options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "contextMenus",
+    "activeTab",
+    "scripting",
+    "tabGroups",
+    "alarms",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "*://*.reddit.com/*",
+    "*://*.yupoo.com/*",
+    "*://*.weidian.com/*",
+    "*://*.taobao.com/*",
+    "*://*.tmall.com/*",
+    "*://*.1688.com/*",
+    "*://*.superbuy.com/*",
+    "*://*.allchinabuy.com/*",
+    "*://*.cnfans.com/*",
+    "*://*.mulebuy.com/*",
+    "*://*.kakobuy.com/*",
+    "*://*.hoobuy.com/*",
+    "*://*.acbuy.com/*",
+    "*://*.youshop10.com/*",
+    "*://*.tb.cn/*",
+    "*://*.ikako.vip/*",
+    "https://docs.google.com/spreadsheets/*",
+    "https://open.er-api.com/*"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.reddit.com/*",
+        "*://*.yupoo.com/*",
+        "*://*.weidian.com/*",
+        "*://*.taobao.com/*",
+        "*://*.tmall.com/*",
+        "*://*.1688.com/*",
+        "*://*.superbuy.com/*",
+        "*://*.allchinabuy.com/*",
+        "*://*.cnfans.com/*",
+        "*://*.mulebuy.com/*",
+        "*://*.kakobuy.com/*",
+        "*://*.hoobuy.com/*",
+        "*://*.acbuy.com/*",
+        "https://docs.google.com/spreadsheets/*"
+      ],
+      "js": [
+        "lib/links.js",
+        "lib/util.js",
+        "content/main.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://docs.google.com/spreadsheets/d/*/htmlview/sheet*"
+      ],
+      "js": [
+        "lib/links.js",
+        "lib/util.js",
+        "content/main.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "open-panel": {
+      "suggested_key": {
+        "default": "Alt+Shift+L"
+      },
+      "description": "Open the RepHop list"
+    },
+    "send-current": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Open the product on this page in your agent (Superbuy)"
+    },
+    "save-current": {
+      "suggested_key": {
+        "default": "Alt+Shift+K"
+      },
+      "description": "Save the product on this page to the list"
+    },
+    "grab-all": {
+      "suggested_key": {
+        "default": "Alt+Shift+G"
+      },
+      "description": "Save every rep link on this page"
+    }
+  }
+}
