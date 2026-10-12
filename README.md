@@ -157,7 +157,7 @@ panel/               the list, paste box, settings and help
 tests/               node:test suites, and tests/e2e for the browser run
 ```
 
-**Publishing to the Chrome Web Store:** zip the folder without `tests/`, `README.md`, `PRIVACY.md` and `LICENSE`. The store will ask for a justification of each permission (the table above) and a privacy policy (PRIVACY.md). Store policy on listings that mention third-party brands or replica goods is the publisher's to check.
+**Publishing to the Chrome Web Store:** zip the folder without `tests/`, `README.md`, `PRIVACY.md` and `LICENSE`. The store will ask for a justification of each permission (the table above) and a privacy policy (PRIVACY.md). Store policy on listings that mention third-party brands or replica goods is the publisher's to check
 
 ## License
 
