@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RepHop</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img src="../icons/icon48.png" width="22" height="22" alt=""><span>RepHop</span></div>
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" data-view="list" class="on">List</button>
+      <button type="button" data-view="add">Add</button>
+      <button type="button" data-view="settings">Settings</button>
+      <button type="button" data-view="help">Help</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============================== LIST ============================== -->
+    <section id="view-list">
+      <div class="quick">
+        <label class="switch" title="When this is on, clicking a product link on Reddit opens the listing in your agent instead of the original site.">
+          <input type="checkbox" id="q-hijack"><span class="track"></span><span id="q-hijack-label">Click a link → Superbuy</span>
+        </label>
+        <select id="q-mode" aria-label="Where listings open">
+          <option value="reuse">One tab, reused</option>
+          <option value="window">Side window</option>
+          <option value="group">Tab group</option>
+          <option value="new">New tab each time</option>
+        </select>
+      </div>
+
+      <div id="queue-banner" class="banner" hidden>
+        <span id="queue-text"></span>
+        <span class="grow"></span>
+        <button type="button" id="queue-prev" title="Previous item">◀</button>
+        <button type="button" id="queue-next" class="primary">Next ▶</button>
+        <button type="button" id="queue-stop">End</button>
+      </div>
+
+      <div class="row">
+        <input type="search" id="search" placeholder="Search your finds" aria-label="Search your finds">
+        <select id="sort" aria-label="Sort">
+          <option value="new">Newest</option>
+          <option value="old">Oldest</option>
+          <option value="cheap">Price: low to high</option>
+          <option value="pricey">Price: high to low</option>
+          <option value="name">Name</option>
+          <option value="hot">Most seen</option>
+        </select>
+      </div>
+
+      <div class="folders" id="folders" role="tablist" aria-label="Folders"></div>
+
+      <div class="row filters">
+        <select id="f-status" aria-label="Filter by status">
+          <option value="">Any status</option>
+          <option value="unviewed">Not viewed yet</option>
+          <option value="saved">Not in cart</option>
+          <option value="carted">In cart</option>
+          <option value="bought">Bought</option>
+          <option value="problem">Sold out or removed</option>
+          <option value="nolink">Yupoo only (no buy link)</option>
+          <option value="noprice">No price</option>
+        </select>
+        <select id="f-tag" aria-label="Filter by tag"><option value="">Any tag</option></select>
+        <select id="f-seller" aria-label="Filter by seller"><option value="">Any seller</option></select>
+      </div>
+
+      <div class="summary">
+        <div class="totals"><strong id="count"></strong><span id="total"></span></div>
+        <span class="grow"></span>
+        <button type="button" id="select-all" title="Select everything shown">Select</button>
+        <button type="button" id="start-queue" class="primary" title="Open these one at a time in a single tab, with Next/Previous buttons on the page">Go through</button>
+        <details class="menu" id="more">
+          <summary>More</summary>
+          <div class="menu-body">
+            <div class="menu-scope" id="scope"></div>
+            <button type="button" data-do="open-all">Open all in tabs</button>
+            <button type="button" data-do="check">Check availability</button>
+            <hr>
+            <button type="button" data-do="copy-text">Copy as text</button>
+            <button type="button" data-do="copy-md">Copy as Reddit markdown</button>
+            <button type="button" data-do="copy-links">Copy agent links</button>
+            <button type="button" data-do="csv">Export spreadsheet (CSV)</button>
+            <hr>
+            <button type="button" data-do="delete" class="danger">Delete these…</button>
+          </div>
+        </details>
+      </div>
+
+      <div class="bulk" id="bulk" hidden>
+        <strong id="bulk-count"></strong>
+        <select id="bulk-move" aria-label="Move selected to folder"></select>
+        <button type="button" id="bulk-tag">Tag</button>
+        <button type="button" id="bulk-clear">Clear</button>
+      </div>
+
+      <ul id="items" class="items"></ul>
+      <button type="button" id="show-more" class="wide" hidden>Show more</button>
+
+      <div id="empty" class="empty" hidden>
+        <h2>Nothing saved yet</h2>
+        <p>Open a Reddit post with Weidian, Taobao, 1688 or Yupoo links. Each link gets a small button:</p>
+        <ul>
+          <li><span class="demo-pill"><b>⚡ SB</b><i>＋</i></span> Left side opens the listing in your agent. <b>＋</b> saves it here.</li>
+          <li>Or hover a link and press <kbd>S</kbd> to open or <kbd>A</kbd> to save.</li>
+          <li><kbd>Alt</kbd> + click a link saves it without leaving the page.</li>
+        </ul>
+        <p><button type="button" class="link" data-goto="add">Paste links by hand</button> · <button type="button" class="link" data-goto="help">See everything it does</button></p>
+      </div>
+      <div id="no-match" class="empty" hidden>
+        <p>Nothing matches these filters.</p>
+        <p><button type="button" class="link" id="clear-filters">Clear filters</button></p>
+      </div>
+    </section>
+
+    <!-- =============================== ADD =============================== -->
+    <section id="view-add" hidden>
+      <h2>Add links</h2>
+      <p class="hint">Paste anything: one link, a whole Reddit comment, a column copied from a spreadsheet. Product links are picked out and everything else is ignored. Other agents' links (CNFans, Kakobuy, Pandabuy…) are converted.</p>
+      <textarea id="paste" rows="9" placeholder="https://weidian.com/item.html?itemID=…&#10;Black hoodie - https://singor.x.yupoo.com/albums/123…" aria-label="Links to add"></textarea>
+      <div class="row">
+        <select id="paste-folder" aria-label="Folder to add to"></select>
+        <button type="button" id="paste-add" class="primary">Add to list</button>
+      </div>
+      <p id="paste-found" class="hint"></p>
+      <hr>
+      <button type="button" id="add-tab" class="wide">Save the page in the current tab</button>
+      <p class="hint">Works when the tab is a product page (Weidian, Taobao, 1688, a Yupoo album or another agent's listing).</p>
+    </section>
+
+    <!-- ============================ SETTINGS ============================ -->
+    <section id="view-settings" hidden>
+      <h2>Opening listings</h2>
+      <label class="field"><span>Shopping agent</span><select data-setting="agent" id="s-agent"></select></label>
+      <div id="custom-agent" hidden>
+        <label class="field"><span>Agent name</span><input type="text" data-setting="customName" maxlength="20" placeholder="My agent"></label>
+        <label class="field col"><span>Link template</span><input type="text" data-setting="customTemplate" id="s-template" placeholder="https://example.com/product?url={url}"></label>
+        <p class="hint">Use <code>{url}</code> for the encoded product link, or <code>{id}</code> and <code>{platform}</code> (weidian / taobao / 1688).</p>
+        <div id="custom-allow-row" hidden>
+          <p class="hint">To reuse one tab on this site, RepHop has to be able to see that tab. Without it, each listing opens in a new tab.</p>
+          <button type="button" id="custom-allow">Allow on this agent's site</button>
+        </div>
+      </div>
+      <label class="field"><span>Open listings in</span>
+        <select data-setting="openMode">
+          <option value="reuse">One tab, reused every time</option>
+          <option value="window">A side window, reused every time</option>
+          <option value="group">A new tab each time, in one tab group</option>
+          <option value="new">A new tab each time</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" data-setting="focusOnOpen"><span>Jump to the listing when it opens <small>Turn off to stay on Reddit while listings load behind you.</small></span></label>
+
+      <h2>Clicks and hotkeys</h2>
+      <label class="check"><input type="checkbox" data-setting="clickHijack"><span>Left-click a product link to open it in the agent <small>Shift+click always opens the original link. Ctrl+click or middle-click opens the listing in a background tab.</small></span></label>
+      <label class="check"><input type="checkbox" data-setting="altClickSave"><span>Alt+click a product link to save it</span></label>
+      <label class="check"><input type="checkbox" data-setting="hotkeysEnabled"><span>Hover a link and press a key</span></label>
+      <div class="keys" id="keys">
+        <label><input type="text" maxlength="1" data-key="open"><span>open in agent</span></label>
+        <label><input type="text" maxlength="1" data-key="save"><span>save</span></label>
+        <label><input type="text" maxlength="1" data-key="qc"><span>QC photos</span></label>
+        <label><input type="text" maxlength="1" data-key="original"><span>original link</span></label>
+      </div>
+      <div class="shortcuts">
+        <div id="commands"></div>
+        <button type="button" id="edit-shortcuts">Change browser shortcuts</button>
+      </div>
+
+      <h2>On the page</h2>
+      <label class="check"><input type="checkbox" data-setting="showPills"><span>Show the open / save buttons next to links</span></label>
+      <label class="field"><span>Button style</span><select data-setting="pillStyle"><option value="full">Icon and agent name</option><option value="compact">Icon only</option></select></label>
+      <label class="check"><input type="checkbox" data-setting="hoverCard"><span>Preview card when hovering a link <small>Shows the picture, name and price without opening anything.</small></span></label>
+      <label class="check"><input type="checkbox" data-setting="showFab"><span>Action bar in the corner <small>“Save all links”, queue controls and the list button.</small></span></label>
+      <label class="check"><input type="checkbox" data-setting="detectTextLinks"><span>Detect links posted as plain text</span></label>
+
+      <h2>List</h2>
+      <label class="field"><span>Show prices in</span><select data-setting="currency" id="s-currency"></select></label>
+      <p class="hint" id="rate-note"></p>
+      <p class="hint"><a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer">Rates By Exchange Rate API</a></p>
+      <label class="field"><span>New finds go to</span><select data-setting="defaultFolder" id="s-default-folder"></select></label>
+      <label class="field"><span>QC photo site</span><select data-setting="qcProvider" id="s-qc"></select></label>
+      <div id="custom-qc" hidden>
+        <label class="field col"><span>QC link template</span><input type="text" data-setting="qcTemplate" placeholder="https://example.com/qc?url={url}"></label>
+      </div>
+      <label class="check"><input type="checkbox" data-setting="autoAdvance"><span>In a queue, move to the next item after “Add to Cart” <small>Superbuy only. You get three seconds to cancel.</small></span></label>
+
+      <h3>Folders</h3>
+      <ul class="plain" id="folder-list"></ul>
+      <div class="row"><input type="text" id="folder-new" maxlength="30" placeholder="New folder name" aria-label="New folder name"><button type="button" id="folder-add">Add</button></div>
+
+      <h3>Trusted sellers</h3>
+      <p class="hint">Their links get a gold outline on Reddit. Add a Yupoo username here, or tick “trusted” on any saved item (for Weidian items the shop is looked up a little while after you save them).</p>
+      <ul class="plain" id="seller-list"></ul>
+      <div class="row"><input type="text" id="seller-new" maxlength="60" placeholder="Yupoo username" aria-label="Yupoo username"><button type="button" id="seller-add">Add</button></div>
+
+      <h2>Sync and backup</h2>
+      <label class="check"><input type="checkbox" data-setting="sync"><span>Sync my list between my computers <small>Uses your browser's own sync. Names (up to 80 characters), prices, folders, tags and notes (up to 200 characters) are synced. Longer text stays complete on the device where you wrote it. Pictures are re-downloaded.</small></span></label>
+      <p class="hint" id="sync-note"></p>
+      <div class="row wrap">
+        <button type="button" id="sync-now">Sync now</button>
+        <button type="button" id="backup-export">Export backup</button>
+        <button type="button" id="backup-import">Import backup</button>
+        <input type="file" id="backup-file" accept="application/json,.json" hidden>
+      </div>
+
+      <h2>More sites</h2>
+      <p class="hint">RepHop runs on Reddit, Yupoo, Google Sheets and the shopping sites. Add another site (a Discord web page, a finds site) and it will show the same buttons there.</p>
+      <ul class="plain" id="site-list"></ul>
+      <div class="row"><input type="text" id="site-new" placeholder="example.com" aria-label="Site to add"><button type="button" id="site-add">Add site</button></div>
+
+      <h2>Privacy and clean-up</h2>
+      <p class="hint">Besides your list, RepHop remembers which links you opened, which posts a link appeared in, and previews it has already looked up. All of it stays in this browser.</p>
+      <div class="row wrap">
+        <button type="button" id="clear-history">Clear that history…</button>
+        <button type="button" id="wipe" class="danger">Delete my whole list…</button>
+      </div>
+    </section>
+
+    <!-- ============================== HELP ============================== -->
+    <section id="view-help" hidden>
+      <h2>How RepHop works</h2>
+      <ol class="steps">
+        <li><b>Browse Reddit as usual.</b> Every Weidian, Taobao, 1688 and Yupoo link, and every other agent's link, gets a small button next to it.</li>
+        <li><b>Click the link</b> (or the ⚡ button) and the listing opens in <span data-agent>Superbuy</span>, in one tab that is reused, so you never pile up tabs.</li>
+        <li><b>Click ＋</b> to save a find here instead. Go through them later, one at a time, with <b>Go through</b>.</li>
+      </ol>
+
+      <h3>Shortcuts on the page</h3>
+      <table class="cheat">
+        <tr><td><kbd>Click</kbd> a product link</td><td>Open the listing in <span data-agent>Superbuy</span></td></tr>
+        <tr><td><kbd>Ctrl</kbd>+click or middle-click</td><td>Open it in a background tab</td></tr>
+        <tr><td><kbd>Alt</kbd>+click</td><td>Save it to your list</td></tr>
+        <tr><td><kbd>Shift</kbd>+click</td><td>Open the original link, untouched</td></tr>
+        <tr><td>Hover + <kbd data-keyname="open">S</kbd></td><td>Open in <span data-agent>Superbuy</span></td></tr>
+        <tr><td>Hover + <kbd data-keyname="save">A</kbd></td><td>Save</td></tr>
+        <tr><td>Hover + <kbd data-keyname="qc">Q</kbd></td><td>QC photos</td></tr>
+        <tr><td>Hover + <kbd data-keyname="original">O</kbd></td><td>Original link in a new tab</td></tr>
+        <tr><td><kbd>]</kbd> and <kbd>[</kbd></td><td>Next / previous item while going through a queue</td></tr>
+      </table>
+
+      <h3>Good to know</h3>
+      <ul class="notes">
+        <li><b>Yupoo albums:</b> RepHop reads the album and uses the Weidian or Taobao link the seller put in the description. If there is none, the album is saved as-is so you can message the seller.</li>
+        <li><b>Hover a link</b> (or focus it with the keyboard) to see the picture, name and price before opening anything. Weidian and Yupoo previews load directly; Taobao and 1688 have no public preview, so theirs fill in after you have opened the listing once.</li>
+        <li><b>Save all links</b> in the corner bar saves every link on the page plus the comments Reddit has not put on screen yet. Reddit hands over about 500 comments at a time; on bigger threads RepHop tells you how many were left out.</li>
+        <li><b>Google Sheets:</b> the corner bar can grab the links from the tab you are on or from all tabs. “Clickable view” opens a plain version of the sheet where every link gets its own buttons.</li>
+        <li><b>Right-click</b> any product link, a text selection or the page for the same actions on any website.</li>
+        <li><b>Check availability</b> (More menu) flags Weidian items that have sold out or been removed, and Yupoo albums that were deleted. Taobao and 1688 can only be checked by opening them.</li>
+        <li><b>The reused tab</b> is only reused while it still shows a listing. If you have moved on in it (cart, checkout, another site), RepHop leaves it alone and opens a fresh one.</li>
+        <li><b>Stay signed in</b> to your agent: Superbuy only shows a listing when you are logged in.</li>
+        <li><b>Privacy:</b> your list and history stay in this browser. RepHop has no server and collects nothing. It contacts Weidian and Yupoo (pages and pictures) for previews, follows short links you hover, open or save, reads the Reddit thread or Google Sheet you ask it to grab, and asks a public rate service for the yuan exchange rate. Clear the history any time under Settings.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <script src="../lib/links.js"></script>
+  <script src="../lib/util.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

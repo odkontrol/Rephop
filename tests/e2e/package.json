@@ -1,0 +1,12 @@
+{
+  "name": "rephop-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "End-to-end checks for the RepHop extension, run in a real Chrome.",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}
