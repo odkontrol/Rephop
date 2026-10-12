@@ -13,6 +13,12 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 
 Requires Chrome 116 or newer. Stay signed in to Superbuy: it only shows a listing when you are logged in.
 
+
+
+https://github.com/user-attachments/assets/23b55a3c-6bb3-40c4-8b2e-ff0b963fa414
+
+
+
 ## What it does
 
 **On Reddit (and Yupoo, Google Sheets, any site you add)**
