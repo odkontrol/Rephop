@@ -7,6 +7,7 @@
 
   const L = self.RepLinks;
   const U = self.RepUtil;
+  const V = self.RepLive;
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
@@ -46,6 +47,7 @@
     }
     agent = L.agentInfo(data.settings);
     applyTheme();
+    if ('group' in obj) liveConnect();
   }
 
   /** Dark unless the user chose light (or asked to follow the computer). */
@@ -661,7 +663,7 @@
     const mine = myHaul().map((it) => ({ own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, qty: it.qty || 1, options: it.options || [],
       size: U.sizeFor(it, data.settings), style: it.style || '', note: it.note || '', status: it.status, image: it.image }));
     if (mine.length) out.push({ id: '', name: g.me ? g.me + ' (you)' : 'You', you: true, items: mine });
-    for (const p of g.people || []) out.push({ id: p.id, name: p.name, at: p.at, you: false, items: p.items || [] });
+    for (const p of g.people || []) out.push({ id: p.id, name: p.name, at: p.at, you: false, live: p.live || '', items: p.items || [] });
     return out;
   }
 
@@ -739,6 +741,7 @@
     const g = data.group || {};
     const s = data.settings;
     const friends = g.people || [];
+    renderLive();
 
     $('#g-share-box').hidden = gv.box !== 'share';
     $('#g-add-box').hidden = gv.box !== 'add';
@@ -760,8 +763,13 @@
     if (running) $('#g-run-text').textContent = runText(q);
 
     $('#g-body').hidden = !friends.length;
-    $('#g-empty').hidden = !!friends.length;
-    if (!friends.length) return;
+    $('#g-empty').hidden = !!friends.length || !!liveNow();
+    if (!friends.length) {
+      // Nothing of the last haul stays behind in the page.
+      $('#g-people').replaceChildren();
+      $('#g-rows').replaceChildren();
+      return;
+    }
 
     const people = groupPeople();
     const tot = U.groupTotals(people, data.rates, s.currency, g.extra || 0, g.split);
@@ -806,15 +814,175 @@
       return h('section', { class: 'g-person' },
         h('div', { class: 'g-head' },
           h('b', {}, p.name),
+          p.live ? h('span', { class: 'badge good', title: 'This list updates by itself' }, 'live') : null,
           h('span', { class: 'hint' }, r.count + (r.count === 1 ? ' item' : ' items') + ' · ' + U.yuan(r.yuan) + (s.currency !== 'CNY' ? ' ≈ ' + m(r.items) : '')),
           h('span', { class: 'grow' }),
           left.length > 0 && h('button', { type: 'button', disabled: running, title: 'Add ' + (p.you ? 'your' : p.name + '’s') + ' items that are not in the cart yet', onclick: () => groupCart(left.map((it) => entryFor(p, it)), left.length + (p.you ? ' of your items' : ' of ' + p.name + '’s items')) }, 'Add ' + left.length + ' to cart'),
           !p.you && h('button', { type: 'button', class: 'danger', title: 'Take ' + p.name + ' out of this haul', onclick: (e) => confirmClick(e.currentTarget, 'Remove ' + p.name + '? Click again', async () => {
+            // Someone in the live haul is taken out of it altogether; they are told.
+            if (p.live) return liveDo({ op: 'remove', id: p.live }, 'Removed ' + p.name + ' from the live haul.');
             const res = await send({ type: 'group', op: 'remove', id: p.id });
             if (res && res.removed) toast('Removed ' + p.name + '’s list.', { action: { label: 'Undo', fn: () => send({ type: 'group', op: 'restore', person: res.removed }) } });
           }) }, 'Remove')),
         h('ul', { class: 'items' }, p.items.map((it) => groupItem(p, it, false))));
     }));
+  }
+
+  // ---------------------------------------------------------------- live haul
+  // The list page holds the one connection to the relay while it is open: the relay uses it to say
+  // "something changed", and the background then fetches and decrypts it. Sending never needs it.
+
+  let liveSock = null;
+  let liveSockFor = '';
+  let liveUp = false;
+  let liveRetry = null;
+  let liveWait = 2000;
+  let livePing = null;
+
+  function liveNow() {
+    const l = data.group && data.group.live;
+    return l && l.room ? l : null;
+  }
+
+  function liveWanted() {
+    const l = liveNow();
+    return l && l.status !== 'gone' ? l.room + '|' + (l.role === 'host' ? 'host' : l.mid) : '';
+  }
+
+  function liveClose() {
+    clearTimeout(liveRetry);
+    clearInterval(livePing);
+    liveRetry = null;
+    const old = liveSock;
+    liveSock = null;
+    liveUp = false;
+    if (old) {
+      try {
+        old.close();
+      } catch (_) {
+        /* already closed */
+      }
+    }
+  }
+
+  async function liveConnect() {
+    const want = liveWanted();
+    if (want === liveSockFor && (liveSock || liveRetry)) return;
+    liveClose();
+    liveSockFor = want;
+    if (!want) return;
+    const again = () => {
+      liveRetry = setTimeout(() => {
+        liveRetry = null;
+        liveSockFor = '';
+        liveConnect();
+      }, liveWait);
+      liveWait = Math.min(liveWait * 2, 30000);
+    };
+    const info = await send({ type: 'live', op: 'socket' });
+    if (liveSockFor !== want) return;
+    if (!info || !info.ok) return again();
+    let ws;
+    try {
+      ws = new WebSocket(info.url, info.protocols);
+    } catch (_) {
+      return again();
+    }
+    liveSock = ws;
+    ws.addEventListener('open', () => {
+      if (liveSock !== ws) return;
+      liveUp = true;
+      liveWait = 2000;
+      send({ type: 'live', op: 'sync' });
+      livePing = setInterval(() => {
+        try {
+          ws.send('ping');
+        } catch (_) {
+          /* closing */
+        }
+      }, 25000);
+      renderLive();
+    });
+    ws.addEventListener('message', (e) => {
+      if (e.data !== 'pong') send({ type: 'live', op: 'sync' });
+    });
+    ws.addEventListener('close', () => {
+      if (liveSock !== ws) return;
+      clearInterval(livePing);
+      liveSock = null;
+      liveUp = false;
+      renderLive();
+      again();
+    });
+  }
+
+  /** Ask the background to do something in the live haul, and say so if it could not. */
+  async function liveDo(msg, done) {
+    const r = await send(Object.assign({ type: 'live' }, msg));
+    if (r && r.ok) {
+      if (done) toast(done);
+      return r;
+    }
+    const why = r && r.reason;
+    toast(why === 'no-relay' ? 'This copy of RepHop has no relay built in. Enter one under Settings → Live group hauls.'
+      : why === 'name' ? 'Type your name first.'
+      : why === 'invite' ? 'That is not a RepHop invite. Ask your friend to press “Copy invite” again and send all of it.'
+      : why === 'full' ? 'That haul is full (12 friends).'
+      : why === 'ended' ? 'That live haul has ended.'
+      : why === 'busy' ? 'You are already in a live haul. Leave or end it first.'
+      : 'The relay could not be reached. Check your connection and try again.', { error: true });
+    return null;
+  }
+
+  function liveScopes() {
+    return [['*', 'Everything not bought yet']].concat(data.folders.map((f) => ['f:' + f, 'Folder: ' + f]));
+  }
+
+  function renderLive() {
+    const g = data.group || {};
+    const live = liveNow();
+    $('#live-none').hidden = !!live;
+    $('#live-host').hidden = !(live && live.role === 'host');
+    $('#live-member').hidden = !(live && live.role === 'member');
+    if (!live) {
+      const nameBox = $('#live-name');
+      if (nameBox !== document.activeElement && !nameBox.value) nameBox.value = g.me || '';
+      const sel = $('#live-scope');
+      if (sel !== document.activeElement) fillSelect(sel, liveScopes(), liveScopes().some(([v]) => v === sel.value) ? sel.value : '*');
+      const pasted = $('#live-code').value.trim();
+      const inv = pasted ? V.readInvite(pasted) : null;
+      $('#live-join-info').textContent = !pasted ? '' : inv ? 'This is ' + (inv.name ? inv.name + '’s' : 'a') + ' haul, passed along by ' + new URL(inv.relay).host + '.' : 'That is not a RepHop invite.';
+      return;
+    }
+    if (live.role === 'host') {
+      const members = Object.entries(live.members || {});
+      const inside = members.filter(([, m]) => m.status === 'ok').length;
+      $('#live-host-text').textContent = 'Your live haul is on' + (liveUp ? '' : ' (connecting…)') + '. ' + (inside ? inside + (inside === 1 ? ' friend is' : ' friends are') + ' in.' : 'Nobody has joined yet.');
+      $('#live-members').replaceChildren(...members.map(([id, m]) => {
+        if (m.status === 'pending') {
+          return h('li', {}, h('span', {}, m.name + ' wants to join'),
+            h('button', { type: 'button', class: 'primary', onclick: () => liveDo({ op: 'approve', id, ok: true }, m.name + ' is in.') }, 'Let in'),
+            h('button', { type: 'button', onclick: () => liveDo({ op: 'approve', id, ok: false }) }, 'Decline'));
+        }
+        if ((g.people || []).some((p) => p.live === id)) return null;
+        return h('li', {}, h('span', {}, m.name + ' is in and has shared no items yet'),
+          h('button', { type: 'button', class: 'danger', onclick: () => liveDo({ op: 'remove', id }) }, 'Remove'));
+      }).filter(Boolean));
+      return;
+    }
+    const host = live.host || 'the person ordering';
+    const mine = Object.values(data.items).filter((it) => it.platform !== 'yupoo' && it.status !== 'bought' && (live.scope === '*' || it.folder === live.scope)).length;
+    $('#live-member-text').textContent = live.status === 'gone' ? 'This live haul has ended, or you were taken out of it. Nothing more is shared.'
+      : live.status === 'pending' ? 'Waiting for ' + host + ' to let you in. Only your name has been sent so far.'
+      : 'You are in ' + host + '’s live haul' + (liveUp ? '' : ' (connecting…)') + '. ' + mine + (mine === 1 ? ' item is' : ' items are') + ' shared with them, and changes go out by themselves.';
+    const note = live.status === 'ok' ? live.inbox : null;
+    const money = (n) => (n == null ? '?' : U.money(n, note.cur));
+    $('#live-note').textContent = !note ? '' : 'In ' + host + '’s cart: ' + note.marks.filter((x) => x[1] !== 'saved').length + ' of ' + note.marks.length + '. Your part: ' + U.yuan(note.yuan || 0) +
+      (note.cur !== 'CNY' ? ' ≈ ' + money(note.items) : '') + (note.extra ? ' + ' + money(note.share) + ' of shipping and fees = ' + money(note.owes) : '') + '.';
+    $('#live-scope-row').hidden = live.status === 'gone';
+    const now = $('#live-scope-now');
+    if (now !== document.activeElement) fillSelect(now, liveScopes(), live.scope === '*' ? '*' : 'f:' + live.scope);
+    $('#live-leave').textContent = live.status === 'gone' ? 'OK' : live.status === 'pending' ? 'Cancel my request' : 'Leave this haul';
   }
 
   // -------------------------------------------------------------- settings
@@ -921,7 +1089,7 @@
 
   function editing() {
     const a = document.activeElement;
-    return !!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' && a.type !== 'search' && a.closest('.editor, #view-settings, #view-setup, #g-add-box, #g-share-box'));
+    return !!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' && a.type !== 'search' && a.closest('.editor, #view-settings, #view-setup, #g-add-box, #g-share-box, #live'));
   }
 
   function render() {
@@ -1231,6 +1399,51 @@
     $('#g-run-skip').addEventListener('click', () => step(1));
     $('#g-run-stop').addEventListener('click', () => send({ type: 'queue', op: 'stop' }));
 
+    // ---- live haul
+    const liveName = () => $('#live-name').value.replace(/\s+/g, ' ').trim().slice(0, 30);
+    const copyInvite = async (invite, said) => {
+      try {
+        await navigator.clipboard.writeText(invite);
+        toast(said);
+      } catch (_) {
+        toast("Couldn't copy the invite. Click inside the list and press Copy invite again.", { error: true });
+      }
+    };
+    $('#live-start').addEventListener('click', async () => {
+      if (!liveName()) {
+        toast('Type your name first, so your friends know whose haul it is.', { error: true });
+        return void $('#live-name').focus();
+      }
+      const r = await liveDo({ op: 'host', name: liveName() });
+      if (r) copyInvite(r.invite, 'Live haul started. The invite is copied: send it to the friends you are ordering for.');
+    });
+    $('#live-copy').addEventListener('click', async () => {
+      const r = await liveDo({ op: 'invite' });
+      if (r) copyInvite(r.invite, 'Invite copied.');
+    });
+    $('#live-end').addEventListener('click', (e) => confirmClick(e.currentTarget, 'End it for everyone? Click again', () => liveDo({ op: 'end' }, 'Live haul ended. The lists you already have stay here.')));
+    $('#live-join-open').addEventListener('click', () => {
+      $('#live-join-box').hidden = !$('#live-join-box').hidden;
+      if (!$('#live-join-box').hidden) $('#live-code').focus();
+    });
+    $('#live-code').addEventListener('input', renderLive);
+    $('#live-join').addEventListener('click', async () => {
+      if (!liveName()) {
+        toast('Type your name first, so the person ordering knows who is asking.', { error: true });
+        return void $('#live-name').focus();
+      }
+      if (!$('#live-code').value.trim()) return toast('Paste the invite first.', { error: true });
+      const r = await liveDo({ op: 'join', invite: $('#live-code').value, name: liveName(), scope: $('#live-scope').value.replace(/^f:/, '') });
+      if (!r) return;
+      $('#live-code').value = '';
+      $('#live-join-box').hidden = true;
+      toast('Asked to join' + (r.host ? ' ' + r.host + '’s haul' : '') + '. Your items are shared once they let you in.');
+    });
+    $('#live-scope-now').addEventListener('change', (e) => liveDo({ op: 'scope', scope: e.target.value.replace(/^f:/, '') }));
+    $('#live-leave').addEventListener('click', () => liveDo({ op: 'leave' }));
+    // The connection normally says when something changed; this is the fallback for when it is down.
+    setInterval(() => liveWanted() && send({ type: 'live', op: 'sync' }), 60000);
+
     // ---- add
     const found = () => L.extractLabeled($('#paste').value);
     $('#paste').addEventListener('input', () => {
@@ -1280,6 +1493,11 @@
       el.addEventListener('change', () => {
         const key = el.dataset.setting;
         const value = el.type === 'checkbox' ? el.checked : el.value.trim();
+        if (key === 'relay' && value && !V.relayUrl(value)) {
+          toast('A relay address looks like https://rephop-relay.your-name.workers.dev', { error: true });
+          return;
+        }
+        if (key === 'relay') return void patch({ relay: V.relayUrl(value) });
         if ((key === 'customTemplate' || key === 'qcTemplate') && value && !L.validTemplate(value)) {
           toast('That template needs to start with https:// and contain {url} or {id}.', { error: true });
           return;
@@ -1455,6 +1673,7 @@
     send({ type: 'rates' });
     $('#stale-restart').addEventListener('click', () => chrome.runtime.reload());
     $('#build').textContent = 'RepHop ' + U.BUILD;
+    $('#relay-default').textContent = U.DEFAULT_RELAY ? new URL(U.DEFAULT_RELAY).host : 'none in this copy';
     checkBuild();
   })();
 })();

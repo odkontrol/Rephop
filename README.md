@@ -13,12 +13,6 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 4. Pin the ⚡ icon. Clicking it opens your list in the side panel.
 5. A **welcome screen** opens: pick your shopping agent (RepHop does not assume one) and, if you like, enter your sizes. Both can be changed later under Settings.
 
-
-
-https://github.com/user-attachments/assets/c18574c1-661b-4b47-8645-4e812a037886
-
-
-
 Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, only shows a listing when you are logged in.
 
 **Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
@@ -119,6 +113,19 @@ For when one person orders for several friends, so that international shipping i
 
 A share code holds each item's link, name, price, quantity, the choices made on it, the size as text and its note, plus the name you typed and a random id of your copy of RepHop (so that your next code replaces this one). RepHop sends it nowhere: it exists only where you paste it. The amounts use the day's exchange rate; your agent's own rate and fees decide the final numbers. Up to 12 friends per haul.
 
+### Live haul
+
+A live haul is the same thing kept up to date by itself: when a friend changes a colour, adds an item or removes one, the person ordering sees it a moment later, and each friend sees what is in the cart and what they owe.
+
+1. **The person ordering** types their name in the Group tab and presses **Start a live haul**. RepHop copies an invite; they send it to the friends they are ordering for.
+2. **Each friend** presses **Join with an invite**, pastes it, chooses what to share (everything not bought, or one folder) and presses **Ask to join**. Only their name goes with the request.
+3. **The person ordering** sees "Sam wants to join" and presses **Let in**. From then on Sam's list is shared, with them only, and follows Sam's changes while RepHop is open.
+4. Anyone can leave, which takes their list off the relay; the person ordering can remove someone or end the haul for everyone. Lists that were already received stay as ordinary lists.
+
+**What makes it live** is a relay: a small server that passes updates between the browsers in a haul. Lists are encrypted in the browser with a key that only travels inside the invite, so the relay stores and forwards data it cannot read; it sees the room, how many people are in it, when something changed, and (like any server) the IP addresses that connect. Friends never connect to each other. A relay is built into RepHop, so there is nothing to set up: the address is in `lib/util.js` (`DEFAULT_RELAY`), is run by whoever published this copy, and travels inside every invite. To use one of your own instead, enter it under **Settings → Live group hauls**; the relay's source and a five-minute guide to putting one on Cloudflare's free plan are in the separate `rephop-relay` project.
+
+The invite is the key to the haul: send it only to the people you are ordering for. Someone who gets hold of it can ask to join under any name, which is why nobody is in until the person ordering lets them in. Friends see their own items and totals, not each other's. It is live while the RepHop list is open on both sides; changes made while it is closed go out the next time it opens. Share codes keep working without a relay.
+
 ## Google Sheets
 
 In the normal spreadsheet view the corner bar offers "Grab links from this tab", "All tabs" and "Clickable view". The clickable view opens Google's plain HTML version of the sheet, where every link gets its own open and save buttons.
@@ -143,7 +150,7 @@ In the normal spreadsheet view the corner bar offers "Grab links from this tab",
 
 ## Privacy
 
-RepHop has no server, no account and no analytics. Everything it stores stays in your browser.
+RepHop has no account and no analytics, and everything it stores stays in your browser. The one thing that passes through a server is a live group haul, if you start or join one: the lists in it travel through a relay, encrypted so that the relay cannot read them.
 
 What it stores locally:
 
@@ -165,6 +172,7 @@ Network requests the extension makes itself:
 | `reddit.com` (the thread's own JSON) | You press "Save all" on a post | Comments not yet on screen |
 | `docs.google.com` (the sheet's HTML view) | You press a "Grab links" button on a sheet | Read the links |
 | `open.er-api.com` | Twice a day | Yuan exchange rate. [Rates By Exchange Rate API](https://www.exchangerate-api.com) |
+| The relay named in a live haul's invite (or in your settings) | Only while you are in a live group haul | Pass encrypted lists and statuses between the people in the haul |
 
 A short link is never followed just to show a hover preview, including one found in a Yupoo album's description. Sync, if you turn it on, goes through your browser account's own extension sync and nowhere else.
 
@@ -189,7 +197,7 @@ See [PRIVACY.md](PRIVACY.md) for the same information as a standalone policy.
 
 - **Superbuy's listing page was read, never clicked.** What RepHop relies on there comes from the page's own code (see "How far to trust it" above). If Superbuy changes that page, Add to cart stops and tells you what it could not do; opening, saving, the drop-downs for Weidian items and the group haul do not depend on it.
 - **Drop-downs for Weidian items use the seller's wording**, which the agent shows translated. Sizes, plain English and the common colour words are matched; anything else RepHop asks you to pick on the listing once, and remembers in the agent's wording from then on.
-- **Group hauls are not live.** A friend who changes their list sends a new code. RepHop has no server to keep lists in step.
+- **A live haul depends on the relay being up**, and is live only while the RepHop list is open; with it closed, changes wait until it opens. If the relay is down or over its daily allowance, share codes do the same job by hand.
 - **Reddit was tested on saved copies**, not on the live site: a hand-built page in Reddit's structure, plus archived copies of real r/FashionReps threads (new Reddit, with Reddit's own inline stylesheet). Reddit blocks automated browsers, so the live site itself was not driven.
 - Taobao and 1688 have no public preview API. Their name, price and picture fill in after you open the listing once. Availability checks cover Weidian and Yupoo only.
 - A Yupoo album only resolves if the seller put a Weidian, Taobao or 1688 link on it.
@@ -221,6 +229,7 @@ manifest.json
 background.js        service worker: storage, tabs, network, sync, menus, shortcuts, the queue
 lib/links.js         link parsing and URL building (pure, unit-tested)
 lib/util.js          formatting, export, sync packing, page readers, option matching (pure, unit-tested)
+lib/live.js          live group hauls: invites, encryption, talking to the relay (unit-tested)
 content/main.js      buttons, click and hotkey handling, hover card, corner bar, add-to-cart help
 panel/               the list, paste box, settings and help
 tests/               node:test suites, and tests/e2e for the browser run

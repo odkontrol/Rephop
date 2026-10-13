@@ -639,3 +639,54 @@ test('every part of RepHop knows which build it is', () => {
   assert.match(U.BUILD, /^\d+\.\d+\.\d+$/);
   assert.equal(U.BUILD, require('../manifest.json').version, 'the build in the code is the version in the manifest');
 });
+
+// ------------------------------------------------------------ live hauls
+
+const V = require('../lib/live.js');
+
+test('an invite carries where the haul is and the key to read it, and survives a chat message', () => {
+  const live = { relay: 'https://rephop-relay.example.workers.dev', room: V.rand(16), key: V.rand(32), secret: V.rand(24), name: '  Ahmed ' };
+  const invite = V.makeInvite(live);
+  assert.match(invite, /^RHL1\.[A-Za-z0-9_-]+$/);
+  assert.deepEqual(V.readInvite('yo, join my haul:\n' + invite + '\nsee you'), { relay: live.relay, room: live.room, key: live.key, name: 'Ahmed' });
+  assert.ok(!Buffer.from(invite.slice(5), 'base64url').toString().includes(live.secret), 'the host\'s own secret never travels');
+  // things that are not invites
+  assert.equal(V.readInvite('hello'), null);
+  assert.equal(V.readInvite('RHL1.' + Buffer.from('{"u":"http://evil.example","r":"' + live.room + '","k":"' + live.key + '"}').toString('base64url')), null, 'plain http is refused');
+  assert.equal(V.readInvite('RHL1.' + Buffer.from('{"u":"javascript:alert(1)","r":"' + live.room + '","k":"' + live.key + '"}').toString('base64url')), null);
+  assert.equal(V.readInvite('RHL1.' + Buffer.from('{"u":"https://ok.example","r":"../../x","k":"' + live.key + '"}').toString('base64url')), null, 'a room id is letters and digits');
+  assert.equal(V.readInvite('RHL1.' + Buffer.from('{"u":"https://ok.example","r":"' + live.room + '","k":"short"}').toString('base64url')), null);
+  assert.equal(V.readInvite('RHL1.' + 'A'.repeat(60)), null);
+});
+
+test('a relay address is https (or this computer, for tests) and nothing else', () => {
+  assert.equal(V.relayUrl(' https://rephop-relay.me.workers.dev/ '), 'https://rephop-relay.me.workers.dev');
+  assert.equal(V.relayUrl('http://127.0.0.1:8787'), 'http://127.0.0.1:8787');
+  for (const bad of ['http://example.com', 'ftp://x.y', 'javascript:alert(1)', 'https://user:pass@x.y', 'https://x.y/?a=1', 'not a url', '']) assert.equal(V.relayUrl(bad), '', bad);
+});
+
+test('what leaves the browser is sealed: only the haul\'s key opens it, and only in its own slot', async () => {
+  const live = { room: V.rand(16) };
+  const key = V.rand(32);
+  const list = U.packShare('Sam', [{ key: 'weidian:7237185689', platform: 'weidian', label: 'Triangle tee', price: 310, options: [{ n: 'Color', v: 'black' }] }], U.mergeSettings());
+  const blob = await V.seal(key, V.about(live, 'member-one', 'list'), list);
+  assert.match(blob, /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.ok(!/Sam|Triangle|weidian|7237185689|black/.test(blob), 'nothing readable in it');
+  assert.deepEqual((await V.open(key, V.about(live, 'member-one', 'list'), blob)).items, list.items);
+  assert.equal(await V.open(V.rand(32), V.about(live, 'member-one', 'list'), blob), null, 'another key');
+  assert.equal(await V.open(key, V.about(live, 'member-two', 'list'), blob), null, 'another member\'s slot');
+  assert.equal(await V.open(key, V.about(live, 'member-one', 'inbox'), blob), null, 'another kind of slot');
+  assert.equal(await V.open(key, V.about({ room: V.rand(16) }, 'member-one', 'list'), blob), null, 'another room');
+  const bent = blob.slice(0, -3) + (blob.endsWith('AAA') ? 'BBB' : 'AAA');
+  assert.equal(await V.open(key, V.about(live, 'member-one', 'list'), bent), null, 'altered on the way');
+  assert.equal(await V.open(key, V.about(live, 'member-one', 'list'), 'garbage'), null);
+  // sealing the same thing twice never gives the same bytes
+  assert.notEqual(await V.seal(key, 'x', { a: 1 }), await V.seal(key, 'x', { a: 1 }));
+  assert.equal((await V.sha256('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+test('the built-in relay is a proper relay address', () => {
+  assert.equal(V.relayUrl(U.DEFAULT_RELAY), U.DEFAULT_RELAY);
+  assert.match(U.DEFAULT_RELAY, /^https:\/\//);
+  assert.equal(U.mergeSettings().relay, '', 'your own relay is empty until you enter one');
+});

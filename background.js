@@ -3,10 +3,11 @@
  * The only place that writes the saved list, opens agent tabs and talks to the network.
  * Content scripts and the side panel send messages here.
  */
-importScripts('lib/links.js', 'lib/util.js');
+importScripts('lib/links.js', 'lib/util.js', 'lib/live.js');
 
 const L = self.RepLinks;
 const U = self.RepUtil;
+const V = self.RepLive;
 
 const DAY = 86400000;
 const SKIP = Symbol('skip-write');
@@ -1182,6 +1183,11 @@ async function groupOp(m) {
   if (m.op === 'add' || m.op === 'restore') {
     incoming = cleanPerson(m.person);
     if (!incoming) return { ok: false, reason: 'empty' };
+    if (typeof m.liveId === 'string' && m.liveId) {
+      incoming.id = 'live:' + m.liveId;
+      incoming.live = m.liveId;
+      delete incoming.sid;
+    }
     const previews = await get('previews', {});
     const items = await get('items', {});
     for (const it of incoming.items) {
@@ -1271,6 +1277,268 @@ async function ensureGroup() {
     else if (!g.sid) await chrome.storage.local.set({ group: Object.assign(g, { sid: newShareId() }) });
   });
 }
+
+// ------------------------------------------------------- live group hauls
+// A live haul keeps everyone's list up to date through a relay (see lib/live.js). This browser is
+// either the host of one haul or a member of one, and `group.live` says which:
+//   host:   { role, relay, room, key, secret, name, at, members: { id: { name, status, listAt } }, sent: { id: hash } }
+//   member: { role, relay, room, key, secret, mid, name, host, scope, status, inbox, sentHash, at }
+// A member's list goes to the host only. The host sends each member what is in the cart and what they
+// owe. Everything is encrypted before it leaves; the relay cannot read any of it.
+
+function liveOf(g) {
+  return g && g.live && g.live.room ? g.live : null;
+}
+
+/** Change the stored live record. `fn` gets the record (or null) and the group; returning false changes nothing. */
+function editLive(fn) {
+  return mutate('group', null, (g) => {
+    if (!g || !Array.isArray(g.people)) return SKIP;
+    return fn(liveOf(g), g) === false ? SKIP : true;
+  });
+}
+
+const cleanName = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 30) : '');
+
+/** The part of your own list that takes part in a haul. scope: '*' for everything, a folder name, or '' for nothing. */
+function haulItems(items, scope) {
+  if (scope === '') return [];
+  return Object.values(items || {})
+    .filter((it) => it.platform !== 'yupoo' && it.status !== 'bought' && (scope == null || scope === '*' || it.folder === scope))
+    .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+}
+
+/** What the host told a member, rebuilt from untrusted data. */
+function cleanNote(raw) {
+  const num = (v) => (typeof v === 'number' && isFinite(v) && v >= 0 && v < 1e9 ? v : null);
+  const marks = [];
+  for (const m of Array.isArray(raw.marks) ? raw.marks.slice(0, 300) : []) {
+    if (!Array.isArray(m) || typeof m[0] !== 'string' || !L.keyToItem(m[0])) continue;
+    marks.push([m[0], m[1] === 'carted' || m[1] === 'bought' ? m[1] : 'saved', Math.max(1, Math.min(99, parseInt(m[2], 10) || 1))]);
+  }
+  return {
+    host: cleanName(raw.host), cur: /^[A-Z]{3}$/.test(raw.cur || '') ? raw.cur : 'CNY', marks,
+    yuan: num(raw.yuan), items: num(raw.items), share: num(raw.share), owes: num(raw.owes), extra: num(raw.extra),
+    split: raw.split === 'cost' ? 'cost' : 'even', people: Math.max(1, Math.min(99, parseInt(raw.people, 10) || 1)), at: num(raw.at) || 0,
+  };
+}
+
+/** The haul is over for this browser: the room is gone, or the host took this member out. */
+function liveGone(room) {
+  return editLive((live, g) => {
+    if (!live || live.room !== room) return false;
+    if (live.role === 'member') live.status = 'gone';
+    else {
+      // Lists that were live stay, as ordinary lists.
+      for (const p of g.people) delete p.live;
+      delete g.live;
+    }
+  });
+}
+
+/** Member: send my list to the host, if it changed. */
+async function pushMine() {
+  const data = await chrome.storage.local.get(['group', 'items', 'settings']);
+  const live = liveOf(data.group);
+  if (!live || live.role !== 'member' || live.status !== 'ok') return;
+  const obj = U.packShare(live.name, haulItems(data.items, live.scope), U.mergeSettings(data.settings));
+  const hash = U.textHash(JSON.stringify([obj.name, obj.items]));
+  if (hash === live.sentHash) return;
+  const res = await V.call(live, 'list', { method: 'PUT', body: { blob: await V.seal(live.key, V.about(live, live.mid, 'list'), obj) } });
+  if (res.http === 401 || res.http === 404) return void (await liveGone(live.room));
+  if (!res.ok) return;
+  await editLive((cur) => {
+    if (!cur || cur.room !== live.room) return false;
+    cur.sentHash = hash;
+  });
+}
+
+/** Host: tell each member what is in the cart and what they owe, if it changed. */
+async function pushNotes() {
+  const data = await chrome.storage.local.get(['group', 'items', 'settings', 'rates']);
+  const g = data.group;
+  const live = liveOf(g);
+  if (!live || live.role !== 'host') return;
+  const settings = U.mergeSettings(data.settings);
+  const mine = haulItems(data.items, g.mine == null ? '*' : g.mine);
+  const people = (mine.length ? [{ id: '', name: live.name, items: mine }] : []).concat(g.people);
+  const tot = U.groupTotals(people, data.rates, settings.currency, g.extra || 0, g.split);
+  const sent = {};
+  for (let i = 0; i < people.length; i++) {
+    const p = people[i];
+    const member = p.live && live.members ? live.members[p.live] : null;
+    if (!member || member.status !== 'ok') continue;
+    const row = tot.rows[i];
+    const note = {
+      host: live.name, cur: settings.currency, marks: p.items.map((it) => [it.key, it.status || 'saved', it.qty || 1]),
+      yuan: row.yuan, items: row.items, share: row.share, owes: row.owes, extra: tot.extra, split: g.split === 'cost' ? 'cost' : 'even', people: people.length,
+    };
+    const hash = U.textHash(JSON.stringify(note));
+    if ((live.sent || {})[p.live] === hash) continue;
+    const blob = await V.seal(live.key, V.about(live, p.live, 'inbox'), Object.assign({ at: Date.now() }, note));
+    const res = await V.call(live, 'inbox', { method: 'PUT', body: { id: p.live, blob } });
+    if (res.ok) sent[p.live] = hash;
+  }
+  if (!Object.keys(sent).length) return;
+  await editLive((cur) => {
+    if (!cur || cur.room !== live.room) return false;
+    cur.sent = Object.assign({}, cur.sent, sent);
+  });
+}
+
+/** Fetch what the relay holds for this browser and take it in. Called when the list opens and whenever the relay says something changed. */
+async function liveSync() {
+  const live = liveOf(await get('group', null));
+  if (!live || live.status === 'gone') return { ok: true, live: false };
+  const res = await V.call(live, 'state', { method: 'GET' });
+  if (res.http === 401 || res.http === 404) {
+    await liveGone(live.room);
+    return { ok: true, gone: true };
+  }
+  if (!res.ok) return { ok: false, reason: 'relay' };
+
+  if (live.role === 'member') {
+    const raw = res.inbox ? await V.open(live.key, V.about(live, live.mid, 'inbox'), res.inbox) : null;
+    const note = raw && typeof raw === 'object' ? cleanNote(raw) : null;
+    await editLive((cur) => {
+      if (!cur || cur.room !== live.room) return false;
+      const before = JSON.stringify([cur.status, cur.inbox]);
+      cur.status = res.status === 'ok' ? 'ok' : 'pending';
+      if (note) cur.inbox = note;
+      return JSON.stringify([cur.status, cur.inbox]) !== before;
+    });
+    await pushMine();
+    return { ok: true };
+  }
+
+  const members = Object.assign({}, live.members);
+  const seen = new Set();
+  for (const mb of Array.isArray(res.members) ? res.members.slice(0, 40) : []) {
+    if (!mb || typeof mb.id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(mb.id)) continue;
+    seen.add(mb.id);
+    const known = members[mb.id] || {};
+    let name = known.name;
+    if (!name) {
+      const hello = await V.open(live.key, V.about(live, mb.id, 'hello'), mb.hello);
+      name = cleanName(hello && hello.name) || 'Friend';
+    }
+    const next = { name, status: mb.status === 'ok' ? 'ok' : 'pending', at: mb.at || 0, listAt: known.listAt || 0 };
+    if (next.status === 'ok' && mb.list && mb.listAt && mb.listAt !== known.listAt) {
+      const shared = U.unpackShare(await V.open(live.key, V.about(live, mb.id, 'list'), mb.list));
+      if (shared) {
+        if (shared.items.length) await groupOp({ op: 'add', person: { name, items: shared.items, at: mb.listAt }, liveId: mb.id });
+        else await groupOp({ op: 'remove', id: 'live:' + mb.id });
+        next.listAt = mb.listAt;
+      }
+    }
+    members[mb.id] = next;
+  }
+  // Someone the relay no longer lists has left.
+  for (const id of Object.keys(members)) {
+    if (seen.has(id)) continue;
+    delete members[id];
+    await groupOp({ op: 'remove', id: 'live:' + id });
+  }
+  await editLive((cur) => {
+    if (!cur || cur.room !== live.room || JSON.stringify(cur.members || {}) === JSON.stringify(members)) return false;
+    cur.members = members;
+  });
+  await pushNotes();
+  return { ok: true };
+}
+
+async function liveOp(m) {
+  await ensureGroup();
+  const g = await get('group', null);
+  const live = liveOf(g);
+  const name = cleanName(m.name);
+
+  if (m.op === 'host') {
+    if (live) return { ok: false, reason: 'busy' };
+    if (!name) return { ok: false, reason: 'name' };
+    // Your own relay if you named one in Settings, otherwise the one built into this copy of RepHop.
+    const relay = V.relayUrl((await getSettings()).relay) || V.relayUrl(U.DEFAULT_RELAY);
+    if (!relay) return { ok: false, reason: 'no-relay' };
+    const next = { role: 'host', relay, room: V.rand(16), key: V.rand(32), secret: V.rand(24), name, at: Date.now(), members: {}, sent: {} };
+    const res = await V.call(next, 'create', { auth: false, body: { hostHash: await V.sha256(next.secret) } });
+    if (!res.ok) return { ok: false, reason: 'relay', http: res.http };
+    await editLive((cur, grp) => {
+      grp.live = next;
+      grp.me = name;
+    });
+    return { ok: true, invite: V.makeInvite(next) };
+  }
+
+  if (m.op === 'join') {
+    if (live) return { ok: false, reason: 'busy' };
+    if (!name) return { ok: false, reason: 'name' };
+    const inv = V.readInvite(m.invite);
+    if (!inv) return { ok: false, reason: 'invite' };
+    const scope = typeof m.scope === 'string' ? m.scope.slice(0, 30) : '*';
+    const next = { role: 'member', relay: inv.relay, room: inv.room, key: inv.key, host: inv.name, mid: V.rand(12), secret: V.rand(24), name, scope, status: 'pending', inbox: null, at: Date.now() };
+    // Only the name goes with the request. The list follows once the host has let this browser in.
+    const hello = await V.seal(next.key, V.about(next, next.mid, 'hello'), { name });
+    const res = await V.call(next, 'join', { auth: false, body: { id: next.mid, hash: await V.sha256(next.secret), hello } });
+    if (!res.ok) return { ok: false, reason: res.error === 'full' ? 'full' : res.http === 404 ? 'ended' : 'relay' };
+    await editLive((cur, grp) => {
+      grp.live = next;
+      grp.me = name;
+    });
+    return { ok: true, status: 'pending', host: inv.name };
+  }
+
+  if (!live) return { ok: false, reason: 'no-live' };
+  if (m.op === 'sync') return liveSync();
+  if (m.op === 'socket') return live.status === 'gone' ? { ok: false } : Object.assign({ ok: true }, V.socket(live));
+
+  if (live.role === 'member') {
+    if (m.op === 'scope') {
+      await editLive((cur) => {
+        cur.scope = typeof m.scope === 'string' ? m.scope.slice(0, 30) : '*';
+      });
+      await pushMine();
+      return { ok: true };
+    }
+    if (m.op === 'leave') {
+      // Leaving takes this browser's list off the relay. If the relay cannot be reached the record is still dropped here.
+      if (live.status !== 'gone') await V.call(live, 'leave');
+      await editLive((cur, grp) => {
+        delete grp.live;
+      });
+      return { ok: true };
+    }
+    return { ok: false, reason: 'member' };
+  }
+
+  if (m.op === 'invite') return { ok: true, invite: V.makeInvite(live) };
+  if (m.op === 'approve' || m.op === 'remove') {
+    if (typeof m.id !== 'string') return { ok: false };
+    const res = await V.call(live, m.op === 'remove' ? 'remove' : 'approve', { body: { id: m.id, ok: m.op === 'approve' && !!m.ok } });
+    if (!res.ok && res.http !== 404) return { ok: false, reason: res.error === 'full' ? 'full' : 'relay' };
+    return liveSync();
+  }
+  if (m.op === 'end') {
+    const res = await V.call(live, 'close');
+    if (!res.ok && res.http !== 404 && res.http !== 401) return { ok: false, reason: 'relay' };
+    await liveGone(live.room);
+    return { ok: true };
+  }
+  return { ok: false, reason: 'unknown' };
+}
+
+// A change to the list, the sizes, the marks or the shipping goes out by itself a moment later.
+let liveTimer = null;
+function scheduleLive() {
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => {
+    pushMine().catch(() => {});
+    pushNotes().catch(() => {});
+  }, 1200);
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && (changes.items || changes.group || changes.settings || changes.rates)) scheduleLive();
+});
 
 // -------------------------------------------------------------------- rates
 
@@ -1605,6 +1873,7 @@ const handlers = {
     await ensureGroup();
     return groupOp(m);
   },
+  live: (m) => liveOp(m),
   pagePatch: async (m) => {
     if (!L.keyToItem(m.key)) return { ok: false };
     const p = { state: 'ok' };

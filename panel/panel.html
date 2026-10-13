@@ -229,6 +229,41 @@
         <p class="hint">A newer code from the same person replaces their earlier list.</p>
       </div>
 
+      <div id="live" class="box">
+        <h3>Live haul</h3>
+        <div id="live-none">
+          <p class="hint">In a live haul everyone’s list keeps itself up to date: change a colour and the person ordering sees it a moment later. Friends join with an invite and are let in one by one. Lists are encrypted before they leave your browser.</p>
+          <label class="field"><span>Your name</span><input type="text" id="live-name" maxlength="30" placeholder="What your friends call you"></label>
+          <div class="row wrap">
+            <button type="button" id="live-start" class="primary">Start a live haul</button>
+            <button type="button" id="live-join-open">Join with an invite</button>
+          </div>
+          <div id="live-join-box" hidden>
+            <textarea id="live-code" rows="2" placeholder="Paste the invite your friend sent you" aria-label="Invite to a live haul"></textarea>
+            <p class="hint" id="live-join-info"></p>
+            <label class="field"><span>Share</span><select id="live-scope"></select></label>
+            <button type="button" id="live-join" class="primary">Ask to join</button>
+            <p class="hint">Only your name goes with the request. Your items are shared once the person ordering lets you in, and only with them.</p>
+          </div>
+        </div>
+        <div id="live-host" hidden>
+          <p id="live-host-text"></p>
+          <ul class="plain" id="live-members"></ul>
+          <div class="row wrap">
+            <button type="button" id="live-copy" class="primary">Copy invite</button>
+            <span class="grow"></span>
+            <button type="button" id="live-end" class="danger">End live haul</button>
+          </div>
+          <p class="hint">Send the invite only to the people you are ordering for: it is the key to this haul. Nobody is in until you let them in.</p>
+        </div>
+        <div id="live-member" hidden>
+          <p id="live-member-text"></p>
+          <p id="live-note"></p>
+          <label class="field" id="live-scope-row"><span>Share</span><select id="live-scope-now"></select></label>
+          <button type="button" id="live-leave">Leave this haul</button>
+        </div>
+      </div>
+
       <div id="g-run" class="banner" hidden>
         <span id="g-run-text"></span>
         <span class="grow"></span>
@@ -361,6 +396,10 @@
       <p class="hint">Write sizes the way sellers do. Separate alternatives with commas (“43, 9.5”): the first one found on the listing is used. Tops covers shirts, hoodies and jackets; bottoms covers pants and shorts.</p>
       <p><button type="button" id="setup-again">Show the welcome screen again</button></p>
 
+      <h2>Live group hauls</h2>
+      <label class="field col"><span>Your own relay <small>leave empty to use the built-in one</small></span><input type="text" data-setting="relay" id="s-relay" placeholder="https://rephop-relay.your-name.workers.dev"></label>
+      <p class="hint">A relay passes updates between the browsers in a live haul. It only ever receives encrypted lists it cannot read. RepHop comes with one built in (<span id="relay-default"></span>), so there is nothing to set up. Fill this in only if you run a relay of your own; friends who join always use the relay named in the invite.</p>
+
       <h2>Sync and backup</h2>
       <label class="check"><input type="checkbox" data-setting="sync"><span>Sync my list between my computers <small>Uses your browser's own sync. Names (up to 80 characters), prices, folders, tags and notes (up to 200 characters) are synced. Longer text stays complete on the device where you wrote it. Pictures are re-downloaded.</small></span></label>
       <p class="hint" id="sync-note"></p>
@@ -422,6 +461,7 @@
         <li><b>The reused tab</b> is only reused while it still shows a listing. If you have moved on in it (cart, checkout, another site), RepHop leaves it alone and opens a fresh one.</li>
         <li><b>Stay signed in</b> to your agent: Superbuy only shows a listing when you are logged in.</li>
         <li><b>Privacy:</b> your list and history stay in this browser. RepHop has no server and collects nothing. It contacts Weidian and Yupoo (pages and pictures) for previews, follows short links you open or save, reads the Reddit thread or Google Sheet you ask it to grab, and asks a public rate service for the yuan exchange rate. A website can tell RepHop's buttons are on its page, but not which links you saved, viewed or trusted. Clear the history any time under Settings.</li>
+        <li><b>Live haul:</b> in the Group tab, type your name and press <b>Start a live haul</b>, then send the invite to your friends. Each of them pastes it under <b>Join with an invite</b>, chooses what to share and asks to join; you let them in one by one. From then on their lists update here by themselves while RepHop is open, and they see what is in your cart and what they owe. Lists are encrypted in the browser; the relay that passes them along cannot read them. Share codes still work without any of this.</li>
         <li><b>Updating:</b> replace the files in RepHop’s folder and open this list: it notices the new files and restarts RepHop by itself. Then reload any Reddit or agent tab that was already open.</li>
       </ul>
       <p class="hint" id="build"></p>
@@ -432,6 +472,7 @@
 
   <script src="../lib/links.js"></script>
   <script src="../lib/util.js"></script>
+  <script src="../lib/live.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
