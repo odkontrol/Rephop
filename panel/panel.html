@@ -13,6 +13,7 @@
     <nav class="tabs" aria-label="Sections">
       <button type="button" data-view="list" class="on">List</button>
       <button type="button" data-view="add">Add</button>
+      <button type="button" data-view="group">Group</button>
       <button type="button" data-view="settings">Settings</button>
       <button type="button" data-view="help">Help</button>
     </nav>
@@ -20,6 +21,41 @@
   </header>
 
   <main>
+    <div id="stale" class="banner" hidden>
+      <span>RepHop was updated, but Chrome is still running the old version, so buttons may do nothing.</span>
+      <span class="grow"></span>
+      <button type="button" id="stale-restart" class="primary">Restart RepHop</button>
+    </div>
+    <!-- ============================== SETUP ============================== -->
+    <section id="view-setup" hidden>
+      <div class="setup">
+        <h1>Welcome to RepHop</h1>
+        <p class="hint">Two quick things and you are set. Both can be changed later under Settings.</p>
+
+        <div class="step">
+          <h2><span class="n">1</span>Which shopping agent do you use?</h2>
+          <p class="hint">Product links open there, and <b>Add to cart</b> puts items in your cart there.</p>
+          <div class="pick-grid" id="setup-agents"></div>
+        </div>
+
+        <div class="step">
+          <h2><span class="n">2</span>Your sizes <small>optional</small></h2>
+          <p class="hint">When a listing asks for a size and you have not chosen one for that item, RepHop picks yours. Write them the way sellers do: listings mostly use EU shoe sizes and S / M / L.</p>
+          <div class="sizes">
+            <label><span>Shoes</span><input type="text" data-size="shoes" maxlength="30" placeholder="43"></label>
+            <label><span>Tops (shirts, hoodies, jackets)</span><input type="text" data-size="tops" maxlength="30" placeholder="L"></label>
+            <label><span>Bottoms (pants, shorts)</span><input type="text" data-size="bottoms" maxlength="30" placeholder="L or 32"></label>
+            <label><span>Belts</span><input type="text" data-size="belts" maxlength="30" placeholder="110"></label>
+            <label><span>Hats</span><input type="text" data-size="hats" maxlength="30" placeholder="58 or M"></label>
+          </div>
+          <p class="hint">Two ways of writing one size? Separate them with a comma (“43, 9.5”) and the first one a listing offers is used.</p>
+        </div>
+
+        <button type="button" id="setup-done" class="primary wide">Start using RepHop</button>
+        <p class="hint center"><button type="button" class="link" id="setup-skip">Skip for now</button></p>
+      </div>
+    </section>
+
     <!-- ============================== LIST ============================== -->
     <section id="view-list">
       <div id="pick-agent" class="pick" hidden>
@@ -99,7 +135,8 @@
           <summary>More</summary>
           <div class="menu-body">
             <div class="menu-scope" id="scope"></div>
-            <button type="button" data-do="cart">Add to cart for me</button>
+            <button type="button" data-do="cart">Add these to cart</button>
+            <button type="button" data-do="share">Share for a group haul</button>
             <button type="button" data-do="open-all">Open all in tabs</button>
             <button type="button" data-do="check">Check availability</button>
             <hr>
@@ -117,7 +154,7 @@
         <strong id="bulk-count"></strong>
         <select id="bulk-move" aria-label="Move selected to folder"></select>
         <button type="button" id="bulk-tag">Tag</button>
-        <button type="button" id="bulk-cart" class="primary" title="Open each selected item at your agent, pick the options and press Add To Cart">Add to cart</button>
+        <button type="button" id="bulk-cart" class="primary" title="Add each selected item to your cart at your agent, one after the other">Add to cart</button>
         <button type="button" id="bulk-delete" class="danger" title="Delete the selected items">Delete</button>
         <button type="button" id="bulk-clear" title="Clear the selection">Clear</button>
       </div>
@@ -154,6 +191,86 @@
       <hr>
       <button type="button" id="add-tab" class="wide">Save the page in the current tab</button>
       <p class="hint">Works when the tab is a product page: Weidian, Taobao, 1688, a Yupoo album, or a listing on one of the built-in agents.</p>
+    </section>
+
+    <!-- ============================== GROUP ============================== -->
+    <section id="view-group" hidden>
+      <h2>Group haul</h2>
+      <p class="hint">One person orders for everyone, so shipping is paid once. Friends send their list as a code; the person ordering adds the codes here, sees what everyone picked, puts it all in one cart and sees what each person owes.</p>
+      <div class="row wrap">
+        <button type="button" id="g-share" class="primary">Share my list</button>
+        <button type="button" id="g-add">Add a friend’s list</button>
+      </div>
+
+      <div id="g-share-box" class="box" hidden>
+        <h3>Share my list</h3>
+        <label class="field"><span>Your name</span><input type="text" id="g-me" maxlength="30" placeholder="What your friends call you"></label>
+        <label class="field"><span>Which items</span><select id="g-scope"></select></label>
+        <p class="hint" id="g-share-note"></p>
+        <div class="row wrap">
+          <button type="button" id="g-copy" class="primary">Copy share code</button>
+          <button type="button" id="g-file">Save as a file</button>
+          <span class="grow"></span>
+          <button type="button" id="g-share-close">Close</button>
+        </div>
+        <p class="hint">Send the code to whoever is ordering (Discord, a text, anything). It holds each item’s link, name and price and the colour, size and quantity you set. RepHop uploads nothing: the code only goes where you paste it.</p>
+      </div>
+
+      <div id="g-add-box" class="box" hidden>
+        <h3>Add a friend’s list</h3>
+        <textarea id="g-code" rows="4" placeholder="Paste your friend’s share code here" aria-label="A friend’s share code"></textarea>
+        <div class="row wrap">
+          <button type="button" id="g-import" class="primary">Add to this haul</button>
+          <button type="button" id="g-open">Open a file…</button>
+          <input type="file" id="g-open-file" accept=".txt,.json,text/plain,application/json" hidden>
+          <span class="grow"></span>
+          <button type="button" id="g-add-close">Close</button>
+        </div>
+        <p class="hint">A newer code from the same person replaces their earlier list.</p>
+      </div>
+
+      <div id="g-run" class="banner" hidden>
+        <span id="g-run-text"></span>
+        <span class="grow"></span>
+        <button type="button" id="g-run-skip">Skip ▶</button>
+        <button type="button" id="g-run-stop">Stop</button>
+      </div>
+
+      <div id="g-body" hidden>
+        <div class="g-total">
+          <span class="hint">Everyone together</span>
+          <strong id="g-sum"></strong>
+          <span class="hint" id="g-sum-note"></span>
+        </div>
+        <div class="g-opts">
+          <label><span>My own items</span><select id="g-mine"></select></label>
+          <label><span>Shipping and fees to split (<span id="g-cur"></span>)</span><input type="number" id="g-extra" min="0" step="0.01" placeholder="0.00"></label>
+          <label><span>Split them</span><select id="g-split"><option value="even">Evenly</option><option value="cost">By item cost</option></select></label>
+        </div>
+        <table class="g-table">
+          <thead><tr><th>Who</th><th>Items cost</th><th>Share</th><th>Owes</th></tr></thead>
+          <tbody id="g-rows"></tbody>
+        </table>
+        <p class="hint" id="g-rate-note"></p>
+        <div class="row wrap">
+          <button type="button" id="g-cart" class="primary" title="Add every item that is not in the cart yet, person by person, each with that person’s choices">Add everything to cart</button>
+          <button type="button" id="g-summary">Copy who owes what</button>
+        </div>
+        <div class="seg" role="tablist" aria-label="How to show the haul">
+          <button type="button" role="tab" data-gview="people" class="on">By person</button>
+          <button type="button" role="tab" data-gview="all">All together</button>
+        </div>
+        <div id="g-people"></div>
+      </div>
+
+      <div id="g-empty" class="empty">
+        <h2>No group haul yet</h2>
+        <ol>
+          <li><b>Each friend</b> opens RepHop, goes to Group, presses <b>Share my list</b> and sends you the code.</li>
+          <li><b>You</b> (the one ordering) press <b>Add a friend’s list</b> and paste each code.</li>
+          <li>Everyone’s items show up here with the colour and size they picked, a total for the whole haul, and what each person owes you.</li>
+        </ol>
+      </div>
     </section>
 
     <!-- ============================ SETTINGS ============================ -->
@@ -231,8 +348,8 @@
       <ul class="plain" id="seller-list"></ul>
       <div class="row"><input type="text" id="seller-new" maxlength="60" placeholder="Yupoo username" aria-label="Yupoo username"><button type="button" id="seller-add">Add</button></div>
 
-      <h2>Add to cart for me</h2>
-      <p class="hint">Select items in your list and press <b>Add to cart</b>. RepHop opens each one at your agent and, on Superbuy and AllChinaBuy, sets the options and presses Add To Cart. To choose, it uses in this order: what you picked on that listing before, the size or colour written on the item (under Edit), then your sizes below. It only picks what it has a reason to pick: if a choice is sold out, missing, or RepHop simply has nothing to go on, it presses nothing and leaves that listing to you, then carries on once you have added it. On other agents it opens each listing and you do the choosing. Nothing is ever paid for: items only go into your cart.</p>
+      <h2>Add to cart</h2>
+      <p class="hint">Every item in your list has an <b>Add to cart</b> button; select several to add them one after the other. RepHop opens the listing at your agent and, on Superbuy and AllChinaBuy, sets the options and presses Add To Cart. It chooses in this order: the colour and size you set on the item (the drop-downs on its card), what you picked on that listing before, then your sizes below. It only picks what it has a reason to pick: if a choice is sold out, missing, or it has nothing to go on, it presses nothing, tells you on the page what it needs, and carries on once you have added the item. It never ticks the site’s agreement box for you and never pays for anything. On other agents it opens each listing and you do the choosing. Each step was checked on a live Superbuy listing in October 2026; AllChinaBuy uses the same page but was not checked. Watch the first item go in.</p>
       <h3>My sizes</h3>
       <div class="sizes" id="sizes">
         <label><span>Shoes</span><input type="text" data-size="shoes" maxlength="30" placeholder="43, 9.5"></label>
@@ -242,6 +359,7 @@
         <label><span>Hats</span><input type="text" data-size="hats" maxlength="30" placeholder="58, M"></label>
       </div>
       <p class="hint">Write sizes the way sellers do. Separate alternatives with commas (“43, 9.5”): the first one found on the listing is used. Tops covers shirts, hoodies and jackets; bottoms covers pants and shorts.</p>
+      <p><button type="button" id="setup-again">Show the welcome screen again</button></p>
 
       <h2>Sync and backup</h2>
       <label class="check"><input type="checkbox" data-setting="sync"><span>Sync my list between my computers <small>Uses your browser's own sync. Names (up to 80 characters), prices, folders, tags and notes (up to 200 characters) are synced. Longer text stays complete on the device where you wrote it. Pictures are re-downloaded.</small></span></label>
@@ -272,7 +390,7 @@
       <ol class="steps">
         <li><b>Browse Reddit as usual.</b> Every Weidian, Taobao, 1688 and Yupoo link, and every other agent's link, gets a small button next to it.</li>
         <li><b>Click the link</b> (or the ⚡ button) and the listing opens in <span data-agent>your agent</span>, in one tab that is reused, so you never pile up tabs.</li>
-        <li><b>Click ＋</b> to save a find here instead. Go through them later, one at a time, with <b>Go through</b>, or select some and press <b>Add to cart</b> to have RepHop put them in your agent's cart.</li>
+        <li><b>Click ＋</b> to save a find here instead. Pick its colour and size from the drop-downs on its card and press <b>Add to cart</b>: RepHop opens the listing at your agent and adds it to your cart there (Superbuy and AllChinaBuy), or opens it for you to add (other agents).</li>
       </ol>
 
       <h3>Shortcuts on the page</h3>
@@ -295,14 +413,18 @@
         <li><b>Save all links</b> in the corner bar saves every link on the page plus the comments Reddit has not put on screen yet. Reddit hands over about 500 comments at a time; on bigger threads RepHop tells you how many were left out.</li>
         <li><b>Google Sheets:</b> the corner bar can grab the links from the tab you are on or from all tabs. “Clickable view” opens a plain version of the sheet where every link gets its own buttons.</li>
         <li><b>Already on your agent's site?</b> The bar in the corner of a listing has <b>Save to RepHop</b>; so does a right-click on the page, <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, and the strip at the top of this list. Saving there also remembers the colour and size you had picked.</li>
-        <li><b>Add to cart for me:</b> on Superbuy and AllChinaBuy, RepHop sets the options from what you chose before and from your sizes (Settings), presses Add To Cart once and waits for the site to confirm. If a choice is sold out, missing, or it has nothing to go on, it presses nothing and asks you on the page. On other agents it opens each listing in turn and marks it when you have added it yourself. Quantities above 1 are set on Superbuy and AllChinaBuy only.</li>
+        <li><b>Colour and size drop-downs:</b> each card shows the choices its listing offers. Weidian items get theirs as soon as they are saved (in the seller’s wording, with a translation for common words); Taobao and 1688 items get theirs the first time you open the listing at your agent. Your sizes fill in the size by themselves.</li>
+        <li><b>Add to cart:</b> on Superbuy and AllChinaBuy, RepHop sets the options you chose, presses Add To Cart once and waits for the site to confirm. If a choice is sold out, missing, or it has nothing to go on, it presses nothing and tells you on the page what it needs. If Superbuy’s “I have read and agree” box under the options is not ticked, RepHop waits for you to tick it and never ticks it itself. The steps RepHop takes (choosing the options, setting the quantity, pressing Add To Cart, reading “Add to cart successfully!”) were each checked on a live Superbuy listing in October 2026. Still, watch the first item go in and check your cart. On other agents it opens each listing in turn and marks it when you have added it yourself.</li>
+        <li><b>Group haul:</b> friends press <b>Share my list</b> (Group tab) and send the code to whoever is ordering. That person pastes each code under <b>Add a friend’s list</b> and gets everyone’s items with their colours and sizes, one total, and what each person owes, with shipping split evenly or by item cost.</li>
         <li><b>Deleting:</b> the × on a card deletes it (with Undo). <b>Select all</b>, then <b>Delete</b>, clears a whole folder or the whole list.</li>
         <li><b>Right-click</b> any product link, a text selection or the page for the same actions on any website.</li>
         <li><b>Check availability</b> (More menu) flags Weidian items that have sold out or been removed, and Yupoo albums that were deleted. Taobao and 1688 can only be checked by opening them.</li>
         <li><b>The reused tab</b> is only reused while it still shows a listing. If you have moved on in it (cart, checkout, another site), RepHop leaves it alone and opens a fresh one.</li>
         <li><b>Stay signed in</b> to your agent: Superbuy only shows a listing when you are logged in.</li>
         <li><b>Privacy:</b> your list and history stay in this browser. RepHop has no server and collects nothing. It contacts Weidian and Yupoo (pages and pictures) for previews, follows short links you open or save, reads the Reddit thread or Google Sheet you ask it to grab, and asks a public rate service for the yuan exchange rate. A website can tell RepHop's buttons are on its page, but not which links you saved, viewed or trusted. Clear the history any time under Settings.</li>
+        <li><b>Updating:</b> replace the files in RepHop’s folder and open this list: it notices the new files and restarts RepHop by itself. Then reload any Reddit or agent tab that was already open.</li>
       </ul>
+      <p class="hint" id="build"></p>
     </section>
   </main>
 

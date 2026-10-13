@@ -135,10 +135,13 @@ async function fetchWeidian(id) {
   const j = await res.json();
   if (!j || !j.status || j.status.code !== 0) throw new Error((j && j.status && j.status.message) || 'Weidian API error');
   const r = j.result || {};
-  if (!r.itemTitle) return { state: 'gone' };
+  if (!r.itemTitle) return { state: 'gone', choices: [], choicesFrom: 'weidian' };
   const cents = r.itemDiscountLowPrice != null ? r.itemDiscountLowPrice : r.itemOriginalLowPrice;
   const out = { state: r.itemStock === 0 ? 'soldout' : 'ok', title: String(r.itemTitle).trim(), image: r.itemMainPic || '' };
   if (typeof cents === 'number' && cents > 0) out.price = cents / 100;
+  // The rows of choices (colour, size…) in the seller's own words. The list shows them as drop-downs.
+  out.choices = U.cleanChoices((Array.isArray(r.attrList) ? r.attrList : []).map((a) => ({ n: a && a.attrTitle, o: Array.isArray(a && a.attrValues) ? a.attrValues.map((v) => v && v.attrValue) : [] })));
+  out.choicesFrom = 'weidian';
   return out;
 }
 
@@ -360,7 +363,15 @@ async function resolveLink(input, force, opts) {
 
 async function savePreview(key, preview, opts) {
   await mutate('previews', {}, (map) => {
-    map[key] = Object.assign({}, map[key], preview, { at: Date.now() });
+    const cur = map[key] || {};
+    const next = Object.assign({}, cur, preview, { at: Date.now() });
+    // What the agent's own listing offers is exact; Weidian's wording never replaces it.
+    if (preview.choicesFrom === 'weidian' && Array.isArray(preview.choices) && preview.choices.length) next.wd = preview.choices;
+    if (preview.choicesFrom === 'weidian' && cur.choicesFrom === 'agent') {
+      next.choices = cur.choices;
+      next.choicesFrom = 'agent';
+    }
+    map[key] = next;
     prune(map, 800, 'at');
   });
   await mutateItems((items) => {
@@ -368,6 +379,18 @@ async function savePreview(key, preview, opts) {
     if (!k) return SKIP;
     return applyPreview(items[k], preview, opts && opts.fresh) ? true : SKIP;
   }, { sync: false });
+  await fillGroup(key, preview);
+}
+
+/** Remembered choices, reworded the way this listing words them (so they keep fitting its drop-downs). */
+function rewordPicks(options, choices, source) {
+  const groups = choices.map((c) => ({ name: c.n, options: c.o.map((t) => ({ text: t })) }));
+  const plan = U.planCart(groups, { options, source });
+  const out = U.cleanOptions(options);
+  plan.rows.forEach((row, gi) => {
+    if (row && typeof row.from === 'number' && row.pick != null && out[row.from]) out[row.from] = { n: groups[gi].name, v: groups[gi].options[row.pick].text };
+  });
+  return out;
 }
 
 /** Copy what we know about a listing onto a saved item. Fills gaps; a fresh fetch also updates name and price. */
@@ -389,6 +412,41 @@ function applyPreview(it, p, fresh) {
     it.check = { state: p.state, at: Date.now() };
     changed = true;
   }
+  // The seller's own rows (Weidian's wording). Kept even once the agent's wording is known: a choice made
+  // in the seller's words is found on the agent's listing through them.
+  const wd = p.choicesFrom === 'weidian' ? p.choices : p.wd;
+  if (Array.isArray(wd) && wd.length && JSON.stringify(it.wd || []) !== JSON.stringify(wd)) {
+    it.wd = wd;
+    changed = true;
+  }
+  if (Array.isArray(p.choices)) {
+    const fromAgent = p.choicesFrom === 'agent';
+    // The agent's own wording wins and stays; Weidian's is used until the listing has been seen there.
+    if (fromAgent || it.choicesFrom !== 'agent') {
+      const from = fromAgent ? 'agent' : 'weidian';
+      if (JSON.stringify(it.choices || []) !== JSON.stringify(p.choices) || (p.choices.length && it.choicesFrom !== from)) {
+        if (p.choices.length) {
+          it.choices = p.choices;
+          it.choicesFrom = from;
+        } else {
+          delete it.choices;
+          delete it.choicesFrom;
+        }
+        changed = true;
+      }
+      if (fromAgent && p.choices.length && it.options && it.options.length) {
+        const next = rewordPicks(it.options, p.choices, it.wd || []);
+        if (JSON.stringify(next) !== JSON.stringify(it.options)) {
+          it.options = next;
+          changed = true;
+        }
+      }
+    }
+    if (!it.optsAt) {
+      it.optsAt = Date.now();
+      changed = true;
+    }
+  }
   return changed;
 }
 
@@ -398,7 +456,7 @@ async function getPreview(key, force) {
   if (!item) return null;
   const hit = (await get('previews', {}))[key];
   if (item.platform !== 'weidian') return hit || null;
-  if (hit && !force && Date.now() - hit.at < DAY) return hit;
+  if (hit && !force && Date.now() - hit.at < DAY && Array.isArray(hit.choices)) return hit;
   return once('preview:' + key, async () => {
     let p;
     try {
@@ -420,7 +478,15 @@ function queuePreview(key) {
     previewWorkers++;
     (async () => {
       while (previewQueue.length) {
-        await getPreview(previewQueue.shift()).catch(() => null);
+        const key = previewQueue.shift();
+        const p = await getPreview(key).catch(() => null);
+        // A preview that was already known is still news to an item that arrived later (a backup, a sync).
+        if (p && !p.stale) {
+          await mutateItems((items) => {
+            const k = findKey(items, key);
+            return k && applyPreview(items[k], p) ? true : SKIP;
+          }, { sync: false }).catch(() => {});
+        }
         await new Promise((r) => setTimeout(r, 250));
       }
     })().finally(() => previewWorkers--);
@@ -621,6 +687,7 @@ function rekeyQueue(oldKey, newKey) {
     const at = q.keys.indexOf(oldKey);
     if (q.keys.includes(newKey)) {
       q.keys.splice(at, 1);
+      if (Array.isArray(q.owner)) q.owner.splice(at, 1);
       if (q.i > at) q.i--;
       q.i = Math.max(0, Math.min(q.i, q.keys.length - 1));
     } else q.keys[at] = newKey;
@@ -816,6 +883,14 @@ function sanitizeItem(raw) {
   if (typeof raw.style === 'string' && raw.style.trim()) it.style = raw.style.trim().slice(0, 40);
   const options = U.cleanOptions(raw.options);
   if (options.length) it.options = options;
+  const choices = U.cleanChoices(raw.choices);
+  if (choices.length) {
+    it.choices = choices;
+    it.choicesFrom = raw.choicesFrom === 'agent' ? 'agent' : 'weidian';
+  }
+  if (typeof raw.optsAt === 'number' && raw.optsAt > 0) it.optsAt = raw.optsAt;
+  const wd = U.cleanChoices(raw.wd);
+  if (wd.length) it.wd = wd;
   return it;
 }
 
@@ -967,7 +1042,15 @@ async function describe(msg) {
  * records each Add To Cart press, so no item is pressed twice in a run. When the queue ends, the report
  * is kept as `cartRun` for the panel to show.
  */
-async function queueOp(msg, srcTab) {
+// Queue changes run one at a time, so two quick presses cannot both start from the same position.
+let queueChain = Promise.resolve();
+function queueOp(msg, srcTab) {
+  const p = queueChain.then(() => queueOpNow(msg, srcTab));
+  queueChain = p.catch(() => {});
+  return p;
+}
+
+async function queueOpNow(msg, srcTab) {
   let q = await get('queue', null);
   const store = () => locked(() => chrome.storage.local.set({ queue: q }));
   const finish = async (extra) => {
@@ -977,24 +1060,28 @@ async function queueOp(msg, srcTab) {
   };
   if (msg.op === 'start') {
     if (!L.agentInfo(await getSettings()).chosen) return { ok: false, reason: 'no-agent' };
-    const keys = (msg.keys || []).filter((k) => L.keyToItem(k));
-    if (!keys.length) return { ok: false, reason: 'empty' };
-    q = { keys, i: 0, active: true, auto: !!msg.auto, results: {}, pressed: {} };
+    // owner[i] says whose item step i is in a group haul: { p: person id, x: item id }, or null for your own.
+    const pairs = (msg.keys || []).map((k, i) => [k, Array.isArray(msg.owner) ? msg.owner[i] : null]).filter(([k]) => typeof k === 'string' && L.keyToItem(k));
+    if (!pairs.length) return { ok: false, reason: 'empty' };
+    q = { keys: pairs.map((x) => x[0]), i: 0, active: true, auto: !!msg.auto, results: {}, pressed: {} };
+    if (pairs.some((x) => x[1])) q.owner = pairs.map((x) => (x[1] && typeof x[1].p === 'string' && typeof x[1].x === 'string' ? { p: x[1].p, x: x[1].x } : null));
   } else if (!q || !q.active) {
     return { ok: false, reason: 'no-queue' };
   } else {
     if (msg.op === 'press') {
-      // The page asks before pressing Add To Cart. It is told yes once per item, and only for the current one.
+      // The page asks before pressing Add To Cart. It is told yes once per step, and only for the current one.
       const key = String(msg.key || '');
       q.pressed = q.pressed || {};
-      if (q.keys[q.i] !== key || q.pressed[key]) return { ok: true, first: false };
-      q.pressed[key] = Date.now();
+      if (q.keys[q.i] !== key || q.pressed[q.i]) return { ok: true, first: false };
+      q.pressed[q.i] = Date.now();
       await store();
       return { ok: true, first: true };
     }
-    if (msg.result && typeof msg.result.key === 'string' && ['added', 'manual', 'skipped'].includes(msg.result.r)) {
+    // A step sent from position N only counts while the queue is still at N (a second press on "Skip" arrives late).
+    if (msg.op === 'step' && typeof msg.at === 'number' && msg.at !== q.i) return { ok: true, stale: true, queue: q };
+    if (msg.result && msg.result.key === q.keys[q.i] && ['added', 'manual', 'skipped'].includes(msg.result.r)) {
       q.results = q.results || {};
-      q.results[msg.result.key] = msg.result.r;
+      q.results[q.i] = msg.result.r;
     }
     if (msg.op === 'stop') return finish({ stopped: true });
     if (msg.op === 'step') {
@@ -1018,6 +1105,171 @@ async function queueOp(msg, srcTab) {
     }
   }
   return { ok: r.ok, queue: q, reason: r.reason };
+}
+
+// -------------------------------------------------------------- group hauls
+// One person orders for several friends. Each friend's list arrives as a share code and is kept here,
+// apart from your own list: { me, mine, extra, split, people: [{ id, name, at, items: [...] }] }.
+
+const GROUP_MAX_PEOPLE = 12;
+
+function newShareId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function emptyGroup() {
+  return { me: '', sid: newShareId(), mine: '*', extra: 0, split: 'even', people: [] };
+}
+
+/** The same product, wanted the same way. */
+function sameWish(a, b) {
+  return a.key === b.key && (a.qty || 1) === (b.qty || 1) && (a.size || '') === (b.size || '') && (a.style || '') === (b.style || '') && JSON.stringify(a.options || []) === JSON.stringify(b.options || []);
+}
+
+function personId(name) {
+  return String(name || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 30) || 'friend';
+}
+
+/** A friend's list, rebuilt from untrusted data. Every item gets an id of its own (the same link can be in a list twice). */
+function cleanPerson(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = typeof raw.name === 'string' ? raw.name.replace(/\s+/g, ' ').trim().slice(0, 30) : '';
+  const items = [];
+  for (const x of Array.isArray(raw.items) ? raw.items.slice(0, 300) : []) {
+    const it = U.sharedItem(x);
+    if (!it) continue;
+    it.uid = String(items.length + 1);
+    items.push(it);
+  }
+  if (!name || !items.length) return null;
+  // A code made by RepHop carries the id of the copy that made it; a person is that id, not the name they typed.
+  const sid = typeof raw.sid === 'string' && /^[a-z0-9]{6,24}$/i.test(raw.sid) ? raw.sid : '';
+  const person = { id: sid ? 's:' + sid : personId(name), name, at: typeof raw.at === 'number' && raw.at > 0 ? raw.at : Date.now(), items };
+  if (sid) person.sid = sid;
+  return person;
+}
+
+/** Names, prices and pictures RepHop already knows are filled into a friend's items. */
+function fillShared(it, p) {
+  if (!p) return false;
+  let changed = false;
+  if (!it.title && (p.titleEn || p.title)) {
+    it.title = String(p.titleEn || p.title).slice(0, 120);
+    changed = true;
+  }
+  if (it.price == null && typeof p.price === 'number') {
+    it.price = p.price;
+    changed = true;
+  }
+  if (!it.image && typeof p.image === 'string' && /^https:\/\//.test(p.image)) {
+    it.image = p.image.slice(0, 500);
+    changed = true;
+  }
+  return changed;
+}
+
+function fillGroup(key, preview) {
+  return mutate('group', null, (g) => {
+    if (!g || !Array.isArray(g.people)) return SKIP;
+    let n = 0;
+    for (const p of g.people) for (const it of p.items) if (it.key === key && fillShared(it, preview)) n++;
+    return n ? true : SKIP;
+  });
+}
+
+async function groupOp(m) {
+  let incoming = null;
+  if (m.op === 'add' || m.op === 'restore') {
+    incoming = cleanPerson(m.person);
+    if (!incoming) return { ok: false, reason: 'empty' };
+    const previews = await get('previews', {});
+    const items = await get('items', {});
+    for (const it of incoming.items) {
+      const mine = items[findKey(items, it.key)];
+      fillShared(it, previews[it.key] || (mine ? { title: mine.title, titleEn: mine.titleEn, price: mine.price, image: mine.image } : null));
+    }
+  }
+  let out = { ok: true };
+  await mutate('group', null, (cur) => {
+    // `mutate` stores the object it handed us, so the group is edited in place.
+    const g = cur && Array.isArray(cur.people) ? cur : null;
+    if (!g) return SKIP;
+    const person = (id) => g.people.find((p) => p.id === id);
+    if (incoming) {
+      const at = g.people.findIndex((p) => p.id === incoming.id);
+      if (at === -1 && g.people.length >= GROUP_MAX_PEOPLE) return void (out = { ok: false, reason: 'full' }) || SKIP;
+      let kept = 0;
+      if (at !== -1) {
+        // A newer list from the same person: what is already in the cart stays marked, as long as it is
+        // still wanted the same way. Anything changed or new comes in unmarked.
+        const old = g.people[at].items.slice();
+        for (const it of incoming.items) {
+          const i = old.findIndex((x) => x.status !== 'saved' && sameWish(x, it));
+          if (i === -1) continue;
+          it.status = old[i].status;
+          if (old[i].added) it.added = old[i].added;
+          old.splice(i, 1);
+          kept++;
+        }
+      } else {
+        // Someone else with the same name is a different person: they are added beside the first, not over them.
+        const taken = (n) => g.people.some((p) => p.name.toLowerCase() === n.toLowerCase());
+        const base = incoming.name;
+        for (let n = 2; taken(incoming.name) && n < 20; n++) incoming.name = base.slice(0, 26) + ' (' + n + ')';
+      }
+      out = { ok: true, id: incoming.id, name: incoming.name, count: incoming.items.length, kept, replaced: at !== -1 ? g.people[at] : null };
+      if (at !== -1) g.people[at] = incoming;
+      else g.people.push(incoming);
+      return true;
+    }
+    if (m.op === 'remove') {
+      const p = person(m.id);
+      if (!p) return SKIP;
+      g.people = g.people.filter((x) => x !== p);
+      out = { ok: true, removed: p };
+      return true;
+    }
+    if (m.op === 'removeItem' || m.op === 'mark') {
+      const p = person(m.id);
+      const it = p && p.items.find((x) => x.uid === m.uid);
+      if (!it) return void (out = { ok: false, reason: 'missing' }) || SKIP;
+      if (m.op === 'removeItem') {
+        p.items = p.items.filter((x) => x !== it);
+        if (!p.items.length) g.people = g.people.filter((x) => x !== p);
+      } else {
+        if (['saved', 'carted', 'bought'].includes(m.status)) it.status = m.status;
+        const options = U.cleanOptions(m.options);
+        if (options.length && it.status !== 'saved') it.added = options;
+        if (it.status === 'saved') delete it.added;
+      }
+      return true;
+    }
+    if (m.op === 'set') {
+      const p = m.patch || {};
+      if (typeof p.me === 'string') g.me = p.me.replace(/\s+/g, ' ').trim().slice(0, 30);
+      if (typeof p.mine === 'string') g.mine = p.mine.slice(0, 30);
+      if ('extra' in p) g.extra = Math.max(0, Math.min(1e6, Math.round((parseFloat(p.extra) || 0) * 100) / 100));
+      if (p.split === 'even' || p.split === 'cost') g.split = p.split;
+      out = { ok: true, sid: g.sid };
+      return true;
+    }
+    if (m.op === 'clear') {
+      g.people = [];
+      return true;
+    }
+    return SKIP;
+  }).catch(() => (out = { ok: false, reason: 'error' }));
+  if (out.ok && incoming) incoming.items.filter((it) => !it.image || it.price == null || !it.title).slice(0, 40).forEach((it) => queuePreview(it.key));
+  return out;
+}
+
+/** The group record exists from the first time it is needed, so edits always have something to work on. */
+async function ensureGroup() {
+  await locked(async () => {
+    const g = await get('group', null);
+    if (!g || !Array.isArray(g.people)) await chrome.storage.local.set({ group: emptyGroup() });
+    else if (!g.sid) await chrome.storage.local.set({ group: Object.assign(g, { sid: newShareId() }) });
+  });
 }
 
 // -------------------------------------------------------------------- rates
@@ -1296,6 +1548,8 @@ const handlers = {
   },
   queue: (m, s) => queueOp(m, s.tab),
   whoami: (m, s) => ({ tabId: s.tab ? s.tab.id : null }),
+  // Answered by whichever copy of the background Chrome is running; the list compares it with its own.
+  version: () => ({ ok: true, build: U.BUILD }),
   refresh: async (m) => {
     // Weidian items are asked directly; Yupoo albums are re-read (a deleted album answers 404).
     // Taobao and 1688 have no public lookup, so those are reported as skipped.
@@ -1318,12 +1572,38 @@ const handlers = {
   },
   /** What "add to cart for me" should choose for one saved item. */
   cartPlan: async (m) => {
-    const data = await chrome.storage.local.get(['items', 'settings']);
+    const data = await chrome.storage.local.get(['items', 'settings', 'queue', 'group', 'previews']);
+    const q = data.queue;
+    const seen = (data.previews || {})[m.key] || {};
+    const sellerRows = seen.wd || (seen.choicesFrom === 'weidian' ? seen.choices : null) || [];
+    const ref = q && q.active && Array.isArray(q.owner) && q.keys[q.i] === m.key ? q.owner[q.i] : null;
+    if (ref) {
+      // A friend's item in a group haul: their choices and their size, never yours.
+      const person = ((data.group && data.group.people) || []).find((p) => p.id === ref.p);
+      const theirs = person && person.items.find((x) => x.uid === ref.x && x.key === m.key);
+      if (!theirs) return { ok: false };
+      return { ok: true, itemKey: theirs.key, options: theirs.options || [], size: theirs.size || '', style: theirs.style || '', qty: theirs.qty || 1, owner: person.name, source: sellerRows };
+    }
     const items = data.items || {};
     const it = items[findKey(items, m.key)];
     if (!it) return { ok: false };
     const settings = U.mergeSettings(data.settings);
-    return { ok: true, itemKey: it.key, options: it.options || [], size: U.sizeFor(it, settings), style: it.style || '', qty: it.qty || 1, kind: U.guessKind(it) };
+    return { ok: true, itemKey: it.key, options: it.options || [], size: U.sizeFor(it, settings), style: it.style || '', qty: it.qty || 1, kind: U.guessKind(it), source: it.wd || sellerRows };
+  },
+  /** An item went into the cart during a run: mark it (yours, or the friend's whose step this is). */
+  cartMark: async (m) => {
+    const q = await get('queue', null);
+    const ref = q && q.active && Array.isArray(q.owner) && q.keys[q.i] === m.key ? q.owner[q.i] : null;
+    const options = U.cleanOptions(m.options);
+    if (ref) return groupOp({ op: 'mark', id: ref.p, uid: ref.x, status: 'carted', options });
+    const items = await get('items', {});
+    const k = findKey(items, m.key);
+    if (!k) return { ok: false };
+    return updateItems([k], Object.assign({ status: 'carted' }, options.length ? { options } : {})).then((r) => r || { ok: true, count: 0 });
+  },
+  group: async (m) => {
+    await ensureGroup();
+    return groupOp(m);
   },
   pagePatch: async (m) => {
     if (!L.keyToItem(m.key)) return { ok: false };
@@ -1331,6 +1611,11 @@ const handlers = {
     if (typeof m.title === 'string' && m.title.trim()) p.title = m.title.trim().slice(0, 200);
     if (typeof m.price === 'number' && m.price > 0) p.price = m.price;
     if (typeof m.image === 'string' && /^https:\/\//.test(m.image)) p.image = m.image.slice(0, 500);
+    // The rows of choices on the agent's listing, in the agent's own words.
+    if (Array.isArray(m.choices)) {
+      p.choices = U.cleanChoices(m.choices);
+      p.choicesFrom = 'agent';
+    }
     await savePreview(m.key, p);
     await markViewed([m.key]);
     return { ok: true };
@@ -1414,6 +1699,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  // An add-to-cart run left waiting when the browser was closed is over.
+  const left = await get('queue', null);
+  if (left && left.active && left.auto) await queueOp({ op: 'stop' }, null).catch(() => {});
   await setupNetRules();
   setupPanel();
   ensureRates();

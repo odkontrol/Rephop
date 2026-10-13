@@ -120,6 +120,7 @@
     .toast::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex: none; }
     .toast.error::before { background: #f87171; }
     .toast.warn::before { background: #fbbf24; }
+    .toast.need { border-color: #ff6b35; box-shadow: 0 0 0 2px rgba(255,107,53,.35), 0 10px 30px rgba(0,0,0,.45); font-weight: 600; }
     .toast span { overflow-wrap: anywhere; }
     .toast button { color: #7dd3fc; font-weight: 600; flex: none; }
     @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
@@ -980,10 +981,17 @@
       const last = queue.i + 1 >= queue.keys.length;
       if (queue.auto && runHere()) {
         const mine = auto.key === pageItem.key ? auto : {};
-        q.textContent = mine.state === 'needs' ? at + ': ' + mine.need : mine.state === 'done' ? at + ': added ✓' : 'Adding to cart, ' + at + '…';
+        const short = (t) => (t.length > 96 ? t.slice(0, 94).replace(/[\s,;.:]+\S*$/, '') + '…' : t);
+        q.textContent = mine.state === 'needs' ? at + ': ' + short(mine.need) : mine.state === 'done' ? at + ': added ✓' : 'Adding ' + (mine.who ? mine.who + '’s ' : '') + 'to cart, ' + at + '…';
+        q.title = mine.state === 'needs' ? mine.need : '';
         btn('qnext').textContent = last ? 'Skip and finish' : 'Skip ▶';
         btn('qnext').title = 'Leave this one out and go on';
         btn('qprev').hidden = true;
+        btn('qstop').textContent = 'Stop';
+      } else if (queue.auto) {
+        // An add-to-cart run works in the tab it opened. Any other tab showing the same listing only says so.
+        q.textContent = 'Adding to cart, ' + at + ' (in the tab RepHop opened)';
+        btn('qnext').hidden = btn('qprev').hidden = true;
         btn('qstop').textContent = 'Stop';
       } else {
         q.textContent = 'Queue ' + at;
@@ -1021,17 +1029,19 @@
     if (res.finished || res.stopped) {
       const r = res.summary ? Object.values(res.summary.results) : [];
       const n = (what) => r.filter((x) => x === what).length;
-      if (r.length) toast('Done. ' + n('added') + ' added for you' + (n('manual') ? ', ' + n('manual') + ' added by you' : '') + (n('skipped') ? ', ' + n('skipped') + ' skipped' : '') + '.', 'ok', null, { sticky: true });
+      if (r.length) toast('Done. ' + n('added') + ' added for you' + (n('manual') ? ', ' + n('manual') + ' added by you' : '') + (n('skipped') ? ', ' + n('skipped') + ' skipped' : '') + '.', 'ok', { label: 'OK', fn: () => {} }, { sticky: true });
       else if (res.finished) toast('Queue finished.', 'ok');
     } else if (res.edge === 'start') toast('That is the first item in the queue.', 'warn');
   }
 
   /** Move through the queue. In an add-to-cart run, moving on without adding counts as skipping the item. */
   function stepQueue(delta) {
+    // An add-to-cart run is only steered from its own tab (or from the list).
+    if (queue && queue.auto && !runHere()) return Promise.resolve();
     // This item has just been added and RepHop is about to move on by itself: a second "next" would skip the following one.
     if (queue && queue.auto && runHere() && auto.state === 'done' && delta > 0) return Promise.resolve();
     const result = queue && queue.auto && runHere() && delta > 0 && auto.state !== 'done' ? { key: pageItem.key, r: 'skipped' } : undefined;
-    return send({ type: 'queue', op: 'step', delta, result }).then(afterQueueStep);
+    return send({ type: 'queue', op: 'step', delta, result, at: queue ? queue.i : undefined }).then(afterQueueStep);
   }
 
   $bar.addEventListener('click', (ev) => {
@@ -1249,6 +1259,13 @@
           }
         }
         send({ type: 'pagePatch', key, title, price: price > 0 ? price : undefined, image });
+        // The rows of choices arrive with the listing; give them a moment, then pass them on so the
+        // list can offer them as drop-downs.
+        setTimeout(() => {
+          if (!pageItem || pageItem.key !== key) return;
+          const groups = optionGroups();
+          if (groups && groups.length && !groups.some((g) => g.multi) && !foldedRows()) send({ type: 'pagePatch', key, title, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text) })) });
+        }, 700);
       }, 800);
     } else if (IS_MARKET) {
       const meta = (p) => {
@@ -1261,17 +1278,27 @@
   }
 
   // ---------------------------------------------- reading a listing's options
-  // Only Superbuy's listing layout (which AllChinaBuy shares) is read. Its class names were checked
-  // against the live page: one .goods-options-row per choice, the choices as ul.goods-options-tags > li,
-  // the chosen one marked .active and unavailable ones .disabled. The site pre-selects a choice in every
-  // row when the page loads, so "something is selected" never means "you chose it".
-  // On every other agent RepHop picks and presses nothing. It walks you through the queue and marks each
-  // item once you have added it yourself.
+  // Only Superbuy's listing layout (which AllChinaBuy shares) is read. This is what the page's own code
+  // builds (checked October 2026):
+  //   rows       .goods-options dl.goods-options-row, named by .good-propName
+  //   choices    ul.goods-options-tags > li.sku-item. The name is the title of .sku-name / .sku-text (or of
+  //              the picture). The chosen one is .active, an unavailable one .disabled. A long row keeps
+  //              the rest behind li.more.
+  //   wholesale  a row marked .multi takes an amount per choice instead of one choice
+  //   no rows    a listing the site could not read offers a "Shopping Agent Notes" box (textarea#desc)
+  //   consent    .rules-operation holds an "I have read and agree" box; Add To Cart is off until it is ticked
+  //   result     after Add To Cart a dialog appears: .alert-dialog-success, or -error / -warning
+  // The site pre-selects a choice in every row when the page loads, so "something is selected" never
+  // means "you chose it". On every other agent RepHop picks and presses nothing: it walks you through
+  // the queue and marks each item once you have added it yourself.
 
   const SB = L.hostMatches(HOST, ['superbuy.com', 'allchinabuy.com']);
   const ADD_TEXT = /^\s*(add to cart|add to shopping cart|加入购物车)\s*$/i;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let myTabId = null; // which browser tab this is; an add-to-cart run only ever acts in its own tab
+  // When this copy of the page started. A run acts only in a page that was opened for its current step.
+  // The step's own stamp is also a Date.now(), taken in the background before the tab is pointed here.
+  const BORN = Date.now();
 
   function shown(el) {
     return !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
@@ -1291,19 +1318,27 @@
     return Array.from(document.querySelectorAll('button, [role="button"], a')).find((b) => shown(b) && ADD_TEXT.test(b.textContent)) || null;
   }
 
+  function addEnabled() {
+    const b = addButton();
+    return !!b && shown(b) && !b.disabled;
+  }
+
   function labelText(el) {
-    return el ? el.textContent.replace(/\s+/g, ' ').replace(/[:：*]/g, '').trim() : '';
+    if (!el) return '';
+    // The row's name only: not the "minimum order" remark the site tucks inside it.
+    const own = Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ');
+    return (own.trim() ? own : el.textContent).replace(/\s+/g, ' ').replace(/[:：*]/g, '').trim();
   }
 
   function optionOf(el) {
-    const name = el.querySelector('.sku-name');
+    const name = el.querySelector('.sku-name, .sku-text');
     const img = el.querySelector('img');
-    const text = ((name && name.textContent) || el.textContent || (img && (img.title || img.alt)) || el.title || '').replace(/\s+/g, ' ').trim();
+    const text = ((name && (name.getAttribute('title') || name.textContent)) || (img && (img.title || img.alt)) || el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim();
     return { el, text, disabled: el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true', selected: el.classList.contains('active') };
   }
 
   /**
-   * The listing's rows of choices: [{ list, name, options: [{ el, text, disabled, selected }] }].
+   * The listing's rows of choices: [{ list, name, multi, options: [{ el, text, disabled, selected }] }].
    * Returns null when this page is not laid out like a listing RepHop knows; nothing is pressed then.
    */
   function optionGroups() {
@@ -1315,9 +1350,55 @@
       const list = row.querySelector('ul.goods-options-tags');
       if (!list) continue;
       const lis = Array.from(list.children).filter((li) => li.tagName === 'LI' && !li.classList.contains('more') && !li.classList.contains('demoPack'));
-      if (lis.length) groups.push({ list, name: labelText(row.querySelector('.good-propName') || row.querySelector('.goods-options-label')).slice(0, 40), options: lis.map(optionOf) });
+      if (!lis.length) continue;
+      groups.push({
+        list,
+        name: labelText(row.querySelector('.good-propName') || row.querySelector('.goods-options-label')).slice(0, 40),
+        multi: row.classList.contains('multi') || !!list.querySelector('.multi-select-row, .goods-number-operation'),
+        options: lis.map(optionOf),
+      });
     }
     return groups;
+  }
+
+  /** The "More" tabs of rows that are still folded (a long row shows its first 21 choices). */
+  function foldedRows() {
+    return Array.from(document.querySelectorAll('.buy-info .goods-options ul.goods-options-tags > li.more')).filter((li) => !/∧|less|收起/i.test(li.textContent)).length;
+  }
+
+  /** Open the folded rows, so every choice can be read. */
+  function expandRows() {
+    let n = 0;
+    for (const li of document.querySelectorAll('.buy-info .goods-options ul.goods-options-tags > li.more')) {
+      if (/∧|less|收起/i.test(li.textContent)) continue;
+      li.click();
+      n++;
+    }
+    return n;
+  }
+
+  /** 'loading' until the listing's name is there; 'refused' for the site's "we do not sell this" notice; 'gone' for a listing the shop took down. */
+  function listingState() {
+    if (document.querySelector('.dialogRisk, .dialogRisk-wrap')) return 'refused';
+    if (document.querySelector('.goods-sold-out')) return 'gone';
+    const title = text('.buy-info h3.goods-title');
+    return !title || title === '-' ? 'loading' : 'ready';
+  }
+
+  /** A visible "Sign In" link means nobody is signed in, and the agent will not show the listing. */
+  function signedOut() {
+    return Array.from(document.querySelectorAll('a, button')).some((el) => /^\s*(sign in|log in|login|登录)\s*$/i.test(el.textContent) && shown(el));
+  }
+
+  /** The site's "I have read and agree" box under its risk notice, if this listing has one. */
+  function consentBox() {
+    return document.querySelector('.rules-operation input[type="checkbox"]');
+  }
+
+  /** A listing the site could not read the choices of: it asks you to describe what you want instead. */
+  function notesBox() {
+    const el = document.querySelector('.buy-info textarea#desc');
+    return el && shown(el) ? el : null;
   }
 
   // Rows in which you have clicked a choice yourself on this page. Only those count as "picked by you"
@@ -1333,84 +1414,56 @@
   function selectedOptions(onlyYours) {
     const out = [];
     for (const g of optionGroups() || []) {
-      if (onlyYours && !touched.has(g.list)) continue;
+      if (g.multi || (onlyYours && !touched.has(g.list))) continue;
       const sel = g.options.find((o) => o.selected);
       if (sel && sel.text) out.push({ n: g.name, v: sel.text.slice(0, 80) });
     }
     return out;
   }
 
-  // What the site says after Add To Cart is pressed. Only messages that appear after the press count.
-  const NOTICE = '.ant-message-notice, .ant-notification-notice, .ant-modal-confirm-body, [role="alert"]';
+  // What the site says after Add To Cart is pressed. Only messages that appear after the press count,
+  // and a refusal always outranks anything that merely mentions the cart ("Add to cart failed!").
+  const NOTICE = '.alert-dialog, .ant-message-notice, .ant-notification-notice, .ant-modal-confirm-body, [role="alert"]';
+  const BAD_NOTICE = '.alert-dialog-error, .alert-dialog-warning, .ant-notification-notice-error, .ant-modal-confirm-error';
+  const BAD_TEXT = /fail|失败|please (select|choose|log ?in|sign ?in|try)|请选择|请先|请稍后|cannot|can[’']t|unable|不能|不足|less than/i;
+  const GOOD_TEXT = /add(ed)? to (the |your )?(shopping )?cart|加入购物车成功|已加入购物车|成功加入/i;
   let noticesBefore = new Set();
-  let cartBefore = 0;
-
-  function cartCount() {
-    return SB ? document.querySelectorAll('.buy-cartBox .cartBox-body li').length : 0;
-  }
 
   function markPress() {
     noticesBefore = new Set(document.querySelectorAll(NOTICE));
-    cartBefore = cartCount();
   }
 
   function newNotices() {
     return Array.from(document.querySelectorAll(NOTICE)).filter((n) => !noticesBefore.has(n));
   }
 
-  function cartConfirmed() {
-    const fresh = newNotices();
-    return cartCount() > cartBefore || fresh.some((n) => n.querySelector('.ant-message-success, .ant-notification-notice-success') || n.matches('.ant-notification-notice-success')) ||
-      /add(ed)? to (the |your )?(shopping )?cart|加入购物车成功|已加入购物车|成功加入/i.test(fresh.map((n) => n.textContent).join(' '));
+  function refusal(fresh) {
+    return fresh.find((n) => n.matches(BAD_NOTICE) || n.querySelector('.ant-message-error, .ant-message-warning, .ant-notification-notice-error') || BAD_TEXT.test(n.textContent)) || null;
   }
 
   function cartRefused() {
+    return !!refusal(newNotices());
+  }
+
+  function cartConfirmed() {
     const fresh = newNotices();
-    return fresh.some((n) => n.querySelector('.ant-message-error, .ant-message-warning, .ant-notification-notice-error') || n.matches('.ant-notification-notice-error, .ant-modal-confirm-error')) ||
-      !!document.querySelector('.goods-options-content.error') || /please (select|choose|log ?in|sign ?in)|请选择|请先/i.test(fresh.map((n) => n.textContent).join(' '));
+    if (refusal(fresh)) return false;
+    return fresh.some((n) => n.matches('.alert-dialog-success, .ant-notification-notice-success') || n.querySelector('.ant-message-success, .ant-notification-notice-success')) ||
+      GOOD_TEXT.test(fresh.map((n) => n.textContent).join(' '));
   }
 
-  function sameText(a, b) {
-    const n = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
-    return !!n(a) && n(a) === n(b);
-  }
-
-  /**
-   * What to do with one row of choices:
-   *   { pick: index }   this is the one (click it, or leave it if it is already chosen)
-   *   { ask: 'why' }    RepHop will not decide this row; you have to
-   * RepHop only ever picks something it has a reason for. A choice that is sold out or not offered is
-   * reported, never swapped for a neighbour, and whatever the site pre-selected counts for nothing.
-   */
-  function decide(group, plan) {
-    const all = group.options.map((o) => ({ text: o.text }));
-    const settle = (i) => (group.options[i].disabled ? { ask: '“' + group.options[i].text + '” is sold out' } : { pick: i });
-    const row = group.name || 'an option';
-    // 1. What you picked on this listing before, for this row.
-    const named = (plan.options || []).find((o) => o.n && sameText(o.n, group.name));
-    if (named) {
-      const i = U.pickOption(all, named.v, true);
-      return i === -1 ? { ask: '“' + named.v + '” is not offered here (' + row + ')' } : settle(i);
-    }
-    // 2. Something you picked before, worded exactly like one of these choices.
-    for (const o of plan.options || []) {
-      const i = group.options.findIndex((x) => sameText(x.text, o.v));
-      if (i !== -1) return settle(i);
-    }
-    // 3. The size or colour written on the item, or your size for this kind of item.
-    const sizeRow = U.isSizeGroup(group.name, group.options);
-    const want = sizeRow ? plan.size : plan.style;
-    if (want) {
-      const i = U.pickOption(all, want, !sizeRow);
-      return i === -1 ? { ask: (sizeRow ? 'your size ' : '') + '“' + want + '” is not offered here' } : settle(i);
-    }
-    // 4. There is nothing to choose between.
-    if (group.options.length === 1) return settle(0);
-    return { ask: 'pick ' + row };
+  /** The site's own words for why it refused, to pass on. */
+  function refusalText() {
+    const n = refusal(newNotices());
+    if (!n) return '';
+    const el = n.querySelector('.alert-dialog-message, .alert-dialog-title') || n;
+    return el.textContent.replace(/\s+/g, ' ').trim().slice(0, 120);
   }
 
   // The item an add-to-cart run is working on right now, and how it is going (shown in the bar).
-  let auto = { key: null, state: '', need: '' };
+  let auto = { key: null, state: '', need: '', who: '' };
+  let needNote = null; // the standing message that says what RepHop needs from you
+  let handedOver = false; // you pressed Add To Cart yourself during this step, so RepHop must not
 
   /**
    * Is this the document an add-to-cart run should act in? Only on the chosen agent's site, only in the
@@ -1419,110 +1472,200 @@
    */
   function runHere() {
     return alive && !!queue && queue.active && !!queue.auto && !!pageItem && queue.keys[queue.i] === pageItem.key &&
-      IS_AGENT && onAgentTarget() && myTabId != null && queue.tabId === myTabId && performance.timeOrigin >= (queue.stepAt || 0) - 200;
+      IS_AGENT && onAgentTarget() && myTabId != null && queue.tabId === myTabId && BORN >= (queue.stepAt || 0);
   }
 
   function stillOn(key) {
     return runHere() && pageItem.key === key;
   }
 
+  function dropNeed() {
+    if (needNote) needNote.close();
+    needNote = null;
+  }
+
+  /** Hand the listing to you: say what is needed in the bar and in a message that stays until it is dealt with. */
   function autoNeeds(key, need) {
     if (!stillOn(key)) return;
-    auto = { key, state: 'needs', need };
+    auto = { key, state: 'needs', need, who: auto.who };
     paintBar();
-    toast(need, 'warn');
+    dropNeed();
+    needNote = toast(need, 'warn need', null, { sticky: true });
   }
 
   /** The item went into the cart: remember what was chosen, mark it, and move on. */
   async function cartDone(key, how) {
-    const st = states[key] || {};
     const picked = selectedOptions(false);
-    await send({ type: 'update', keys: [st.itemKey || key], patch: Object.assign({ status: 'carted' }, picked.length ? { options: picked } : {}) });
+    await send({ type: 'cartMark', key, options: picked });
+    const groups = optionGroups();
+    if (groups && groups.length && !groups.some((g) => g.multi)) send({ type: 'pagePatch', key, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text) })) });
     if (!stillOn(key)) return;
-    auto = { key, state: 'done', need: '' };
+    dropNeed();
+    auto = { key, state: 'done', need: '', who: auto.who };
     paintBar();
-    setTimeout(() => stillOn(key) && send({ type: 'queue', op: 'step', delta: 1, result: { key, r: how } }).then(afterQueueStep), 1200);
+    const at = queue.i;
+    setTimeout(() => stillOn(key) && send({ type: 'queue', op: 'step', delta: 1, result: { key, r: how }, at }).then(afterQueueStep), 1200);
+  }
+
+  /** "Black · M · ×2": what is wanted for this item, for messages that ask you to choose. */
+  function wanted(plan) {
+    if (!plan || !plan.ok) return '';
+    const parts = (plan.options || []).map((o) => o.v);
+    if (plan.size) parts.push('size ' + plan.size);
+    if (plan.style) parts.push(plan.style);
+    if (plan.qty > 1) parts.push('×' + plan.qty);
+    return parts.join(' · ');
+  }
+
+  /** Every row checked against the plan. Returns what still stands in the way (empty when all is set). */
+  function openRows(plan) {
+    const groups = optionGroups();
+    if (!groups) return null;
+    const res = U.planCart(groups, plan);
+    const open = [];
+    res.rows.forEach((d, gi) => {
+      if (d.ask) open.push(d.ask);
+      else if (!groups[gi].options[d.pick].selected) open.push('pick ' + (groups[gi].name || 'an option'));
+    });
+    for (const o of res.unused) open.push('“' + o.v + '”, which ' + (plan.owner || 'you') + ' picked, is not offered here');
+    return open;
   }
 
   /**
-   * One step of "Add to cart for me". Every row of choices is set from what RepHop knows (see decide());
+   * One step of "Add to cart for me". Every row of choices is set from what RepHop knows (U.planCart);
    * if even one row cannot be settled, nothing is pressed and the listing is handed to you. After the
    * press RepHop waits for the site to say it worked, and asks you when the site says nothing.
-   * It never presses Buy Now, and never presses Add To Cart twice for the same item in one run.
+   * It never presses Buy Now, never ticks the site's agreement box for you, and never presses
+   * Add To Cart twice for the same step.
    */
   async function autoCart() {
     if (!runHere()) return;
     const key = pageItem.key;
     if (auto.key === key) return;
-    auto = { key, state: 'working', need: '' };
+    auto = { key, state: 'working', need: '', who: '' };
+    handedOver = false;
     paintBar();
-    if (!SB) return autoNeeds(key, 'Choose the options and press Add To Cart. RepHop marks it and moves on to the next one.');
     const plan = await send({ type: 'cartPlan', key });
-    const ready = await waitFor(() => {
-      const b = addButton();
-      return !!b && shown(b) && !b.disabled;
-    }, 20000);
     if (!stillOn(key)) return;
-    if (!ready) return autoNeeds(key, 'RepHop cannot press Add To Cart here (are you signed in?). Add it yourself, or skip it.');
+    if (plan && plan.owner) {
+      auto.who = plan.owner;
+      paintBar();
+    }
+    const want = wanted(plan);
+    const forWhom = plan && plan.owner ? plan.owner + ' wants: ' : 'Wanted: ';
+    const hint = want ? ' ' + forWhom + want + '.' : '';
+    if (!SB) return autoNeeds(key, 'Choose the options and press Add To Cart. RepHop marks it and moves on to the next one.' + hint);
+
+    // The listing fills in a moment after the page.
+    const since = Date.now();
+    await waitFor(() => listingState() !== 'loading' || (Date.now() - since > 6000 && signedOut()), 25000);
+    if (!stillOn(key)) return;
+    const state = listingState();
+    if (state === 'refused') return autoNeeds(key, agent.name + ' will not take this item (see its notice on the page). Skip it.');
+    if (state === 'gone') return autoNeeds(key, agent.name + ' says this listing has been taken down, so it cannot be added. Skip it.');
+    if (state === 'loading') {
+      return autoNeeds(key, signedOut() ? 'You are not signed in to ' + agent.name + ', so the listing is empty. Sign in, then press Add to cart again.'
+        : 'This listing has not loaded. Are you signed in to ' + agent.name + '? Reload the page, or skip this one.');
+    }
     if (!plan || !plan.ok) return autoNeeds(key, 'Choose the options and press Add To Cart.');
     await sleep(700);
     const unknown = 'RepHop does not recognise this listing, so it has not pressed anything. Add it yourself, or skip it.';
 
-    // Set the rows RepHop can settle, one click at a time (a click can switch other choices on or off,
-    // so everything is read again afterwards). Each choice is tried once, so nothing can loop.
-    const tried = new Set();
-    for (let round = 0; round < 16; round++) {
-      const groups = optionGroups();
-      if (!groups) return autoNeeds(key, unknown);
-      let clicked = false;
-      for (const g of groups) {
-        const d = decide(g, plan);
-        if (d.ask || g.options[d.pick].selected || tried.has(g.name + '|' + d.pick)) continue;
-        tried.add(g.name + '|' + d.pick);
-        g.options[d.pick].el.click();
-        clicked = true;
-        break;
+    /**
+     * Set every row RepHop can settle, then check all of them. Returns true only when each row holds
+     * exactly the choice RepHop decided on; otherwise the listing has been handed to you.
+     * This runs once when the listing is ready and again right before the press, because the page can
+     * change in between (rows that arrive late, a choice that switches another one off).
+     */
+    const settle = async () => {
+      if (expandRows()) await sleep(300);
+      const first = optionGroups();
+      if (!first) return autoNeeds(key, unknown), false;
+      if (first.some((g) => g.multi)) return autoNeeds(key, 'This listing takes an amount for each choice. Set the amounts yourself, then press Add To Cart.' + hint), false;
+      // No buttons to choose from, only a box to describe what you want: that description is yours to write.
+      if (notesBox()) return autoNeeds(key, 'This listing has no buttons for its choices. Write what you want in the Shopping Agent Notes box, then press Add To Cart yourself.' + hint), false;
+      // One click at a time (a click can switch other choices on or off, so everything is read again
+      // afterwards). Each choice is tried once, so nothing can loop.
+      const tried = new Set();
+      for (let round = 0; round < 16; round++) {
+        const groups = optionGroups();
+        if (!groups) return autoNeeds(key, unknown), false;
+        const rows = U.planCart(groups, plan).rows;
+        let clicked = false;
+        for (let gi = 0; gi < groups.length; gi++) {
+          const d = rows[gi];
+          if (d.pick == null || groups[gi].options[d.pick].selected || tried.has(gi + '|' + d.pick)) continue;
+          tried.add(gi + '|' + d.pick);
+          groups[gi].options[d.pick].el.click();
+          clicked = true;
+          break;
+        }
+        if (!clicked) break;
+        await sleep(450);
+        if (!stillOn(key) || handedOver) return false;
       }
-      if (!clicked) break;
-      await sleep(450);
-      if (!stillOn(key)) return;
-    }
-
-    // Check every row again before pressing anything: it must hold exactly the choice RepHop decided on.
-    const groups = optionGroups();
-    if (!groups) return autoNeeds(key, unknown);
-    const open = [];
-    for (const g of groups) {
-      const d = decide(g, plan);
-      if (d.ask) open.push(d.ask);
-      else if (!g.options[d.pick].selected) open.push('pick ' + (g.name || 'an option'));
-    }
-    if (open.length) {
-      const first = open[0].charAt(0).toUpperCase() + open[0].slice(1);
-      return autoNeeds(key, [first].concat(open.slice(1)).join('; ') + '. Choose, then press Add To Cart yourself.');
-    }
+      const open = openRows(plan);
+      if (!open) return autoNeeds(key, unknown), false;
+      if (!open.length) return true;
+      const lead = open[0].charAt(0).toUpperCase() + open[0].slice(1);
+      autoNeeds(key, [lead].concat(open.slice(1)).join('; ') + '. Choose, then press Add To Cart yourself.' + (plan.owner ? hint : ''));
+      return false;
+    };
+    if (!(await settle())) return;
 
     if (plan.qty > 1) {
-      const more = document.querySelector('.buy-info .goods-count-add');
-      for (let i = 1; more && i < Math.min(plan.qty, 20); i++) {
+      // Exactly the quantity on the item, or the listing is handed over.
+      const box = document.querySelector('#step2-goods-count input.goods-count, .buy-info input.goods-count');
+      const more = document.querySelector('#step2-goods-count .goods-count-add, .buy-info .goods-count-add');
+      const now = () => (box ? parseInt(box.value, 10) || 0 : 0);
+      for (let i = 0; box && more && now() < plan.qty && i < 110 && !more.classList.contains('disabled'); i++) {
         more.click();
         await sleep(120);
       }
+      if (!stillOn(key) || handedOver) return;
+      if (now() !== plan.qty) return autoNeeds(key, 'Set the quantity to ' + plan.qty + ' yourself, then press Add To Cart.');
     }
-    // One press per item per run, recorded before it happens.
+
+    if (!addEnabled()) {
+      const box = consentBox();
+      if (box && !box.checked) {
+        // The site's risk notice is yours to agree to. RepHop waits; it does not tick the box.
+        autoNeeds(key, 'Tick “I have read and agree” below the options on this page (' + agent.name + ' remembers it). RepHop carries on as soon as you have.');
+        await waitFor(() => !stillOn(key) || handedOver || addEnabled(), 240000, 400);
+        if (!stillOn(key) || handedOver) return;
+        if (!addEnabled()) return autoNeeds(key, 'RepHop has stopped waiting. Tick the box and press Add To Cart yourself, or skip this one.');
+        dropNeed();
+        auto = { key, state: 'working', need: '', who: auto.who };
+        paintBar();
+      } else {
+        await waitFor(() => addEnabled(), 12000);
+        if (!stillOn(key) || handedOver) return;
+        if (!addEnabled()) return autoNeeds(key, agent.name + ' has Add To Cart switched off for this item (sold out or restricted, most likely). Skip it, or add it yourself if the button comes back.');
+      }
+    }
+
+    // Whatever happened while waiting, the rows are checked once more at the moment of pressing.
+    if (!(await settle())) return;
+    if (!stillOn(key) || handedOver || !addEnabled()) return;
+
+    // One press per step, recorded before it happens.
     const go = await send({ type: 'queue', op: 'press', key });
-    if (!stillOn(key)) return;
+    if (!stillOn(key) || handedOver) return;
     if (!go || !go.first) return autoNeeds(key, 'RepHop has already pressed Add To Cart for this one. Check your cart, then go on.');
     markPress();
     addButton().click();
-    await waitFor(() => cartConfirmed() || cartRefused(), 8000, 250);
+    await waitFor(() => cartConfirmed() || cartRefused(), 10000, 250);
     if (!stillOn(key)) return;
     if (cartConfirmed()) return cartDone(key, 'added');
-    if (cartRefused()) return autoNeeds(key, 'The site did not accept that. Check the options, then press Add To Cart yourself.');
+    if (cartRefused()) {
+      const why = refusalText();
+      return autoNeeds(key, 'The site did not accept that' + (why ? ' (“' + why + '”)' : '') + '. Check the options, then press Add To Cart yourself.');
+    }
     // The site said nothing RepHop recognises. Do not guess, and do not ask for a second press: ask.
-    auto = { key, state: 'needs', need: 'RepHop pressed Add To Cart. Is it in your cart?' };
+    auto = { key, state: 'needs', need: 'RepHop pressed Add To Cart. Is it in your cart?', who: auto.who };
     paintBar();
-    toast('RepHop pressed Add To Cart but cannot tell whether it worked. Is it in your cart?', 'warn', [
+    dropNeed();
+    needNote = toast('RepHop pressed Add To Cart but cannot tell whether it worked. Is it in your cart?', 'warn need', [
       { label: 'Yes', fn: () => cartDone(key, 'added') },
       { label: 'No', fn: () => autoNeeds(key, 'Add it yourself, then RepHop carries on. Or skip it.') },
     ], { sticky: true });
@@ -1540,15 +1683,19 @@
       const btn = ev.target.closest && ev.target.closest('button, [role="button"], a');
       if (!btn || !(btn.matches('.goods-addToCart, .toolbar-addGoods') || ADD_TEXT.test(btn.textContent))) return;
       const key = pageItem.key;
+      if (stillOn(key)) handedOver = true;
       markPress();
-      setTimeout(async () => {
+      (async () => {
+        // The site answers after a request of its own; give it a few seconds before asking you instead.
+        await sleep(600);
+        await waitFor(() => cartConfirmed() || cartRefused(), 6000, 250);
         if (!pageItem || pageItem.key !== key) return;
+        const inRun = stillOn(key);
         const st = states[key];
-        if (!st || !st.saved) return;
-        const itemKey = st.itemKey || key;
+        if (!inRun && (!st || !st.saved)) return;
+        const itemKey = (st && st.itemKey) || key;
         const worked = cartConfirmed();
         if (cartRefused() && !worked) return;
-        const inRun = stillOn(key);
         const picked = selectedOptions(false);
         const mark = async () => {
           if (inRun) return cartDone(key, 'manual');
@@ -1561,12 +1708,16 @@
           if (queueHere() && settings.autoAdvance) {
             let cancelled = false;
             toast('Marked “in cart”. Next item in 3 seconds…', 'ok', { label: 'Stay here', fn: () => (cancelled = true) });
-            setTimeout(() => !cancelled && send({ type: 'queue', op: 'step', delta: 1 }).then(afterQueueStep), 3000);
+            const at = queue ? queue.i : undefined;
+            setTimeout(() => !cancelled && send({ type: 'queue', op: 'step', delta: 1, at }).then(afterQueueStep), 3000);
           } else toast('Marked “in cart” in your RepHop list' + (picked.length ? ', with ' + picked.map((o) => o.v).join(' / ') + '.' : '.'), 'ok', { label: 'Undo', fn: () => send({ type: 'update', keys: [itemKey], patch: { status: 'saved' } }) });
         };
         if (worked) mark();
-        else if (inRun || (st.status !== 'carted' && st.status !== 'bought')) toast('Did that go into your cart?', 'ok', { label: 'Yes, mark it', fn: mark }, inRun ? { sticky: true } : null);
-      }, 1800);
+        else if (inRun || (st.status !== 'carted' && st.status !== 'bought')) {
+          dropNeed();
+          needNote = toast('Did that go into your cart?', 'ok', { label: 'Yes, mark it', fn: mark }, inRun ? { sticky: true } : null);
+        }
+      })();
     }, true);
   }
 
@@ -1612,6 +1763,7 @@
     }
     if (changes.queue) {
       queue = changes.queue.newValue || null;
+      if (!runHere()) dropNeed();
       paintBar();
       autoCart();
     }

@@ -112,53 +112,85 @@ ${priceHtml}
 <script>document.querySelector('.goods-addToCart').addEventListener('click', () => {
   const mode = ${JSON.stringify(mode || 'silent')};
   if (mode === 'silent') return;
-  const n = document.createElement('div'); n.className = 'ant-message-notice';
-  n.innerHTML = mode === 'ok' ? '<div class="ant-message-success">Added to cart successfully</div>' : '<div class="ant-message-error">Please select specifications</div>';
+  // The live site answers with its own dialog. Note that the failure says "Add to cart" too.
+  const n = document.createElement('div');
+  n.innerHTML = '<div class="ant-modal-wrap"><div class="ant-modal alert-dialog alert-dialog-' + (mode === 'ok' ? 'success' : 'error') + '"><div class="alert-dialog-content"><div class="alert-dialog-body"><div class="alert-dialog-text">' +
+    (mode === 'ok' ? '<div class="alert-dialog-title">Add to cart successfully!</div><div class="alert-dialog-message"><p><a>View my cart ></a></p></div>' : '<div class="alert-dialog-title">Add to cart failed!</div><div class="alert-dialog-message"><p>Please try again later</p></div>') +
+    '</div></div></div></div></div>';
   document.body.appendChild(n);
 });</script></body></html>`;
 }
 
 /**
- * A listing with colour and size rows, built like the live Superbuy page: every row arrives with its
- * first choice already selected (li.sku-item.active), and there is no mini-cart on the page.
- *   confirm: 'toast' shows a success message after Add To Cart; 'silent' shows nothing.
- *   soldOut: a size to mark as unavailable.
+ * A listing with colour and size rows, built the way the live Superbuy page builds it (see the notes
+ * at the top of the add-to-cart code): every row arrives with its first choice already selected, each
+ * choice carries its name in a title, and the site answers Add To Cart with a dialog.
+ *   confirm: 'dialog' shows the site's success dialog after Add To Cart; 'silent' shows nothing
+ *   fail:    the site answers with its "Add to cart failed!" dialog instead
+ *   soldOut: a size to mark as unavailable
+ *   consent: the listing carries the risk notice; Add To Cart stays off until its box is ticked
  * Every Add To Cart and Buy Now press is written to localStorage, so the test can see exactly what was
  * added, how often, and from which tab.
  */
 function optionStub(opts) {
-  const o = Object.assign({ confirm: 'toast', soldOut: '' }, opts);
-  const li = (text, i) => '<li class="sku-item' + (i === 0 ? ' active' : '') + (text === o.soldOut ? ' disabled' : '') + '">' + text + '</li>';
+  const o = Object.assign({ confirm: 'dialog', soldOut: '', consent: false, fail: false, late: 0, notes: false }, opts);
+  const li = (text, i) => '<li class="sku-item text-li' + (i === 0 ? ' active' : '') + (text === o.soldOut ? ' disabled' : '') + '"><div class="goods-props-image"><span class="sku-text" title="' + text + '">' + text + '</span></div></li>';
+  const off = o.consent || o.late ? ' disabled' : '';
+  const rowsHtml = '<dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Color</span><span class="select-tips">Selected: Black</span></dt>' +
+    '<dd class="goods-options-content"><ul class="goods-options-tags">' + ['Black', 'White'].map(li).join('') + '</ul></dd></dl>' +
+    '<dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Size</span></dt>' +
+    '<dd class="goods-options-content"><ul class="goods-options-tags">' + ['S', 'M', 'L', 'XL'].map(li).join('') + '</ul></dd></dl>';
+  const notesHtml = '<dl class="goods-options-row textarea"><dt class="goods-options-label">Shopping Agent Notes</dt><dd class="goods-options-content"><textarea id="desc" maxlength="200" class="goods-options-text"></textarea></dd></dl>';
   return `<!doctype html><html><head><title>Superbuy</title><style>
 body{margin:30px;font:14px sans-serif} .goods-options-tags{list-style:none;display:flex;gap:8px;padding:0} .goods-options-tags li{border:1px solid #999;padding:6px 12px;cursor:pointer}
-.goods-options-tags li.active{border-color:#e33;color:#e33} .goods-options-tags li.disabled{opacity:.4} button{padding:8px 14px;margin-right:8px}</style></head><body>
+.goods-options-tags li.active{border-color:#e33;color:#e33} .goods-options-tags li.disabled{opacity:.4} button{padding:8px 14px;margin-right:8px} .goods-count-btns i{padding:2px 8px;border:1px solid #999;cursor:pointer}</style></head><body>
 <div class="buy-main"><div class="buy-info">
   <div class="goods-title"><h3 class="goods-title">Option Listing</h3></div>
   <div class="goods-price"><div class="price-content"><span class="appr">≈</span><i class="goods-rmb">US $</i><strong class="goods-txt">12.34</strong><p class="foreign-currency">CN ￥<span>88</span></p></div></div>
-  <div class="goods-options">
-    <dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Color</span><span class="select-tips"></span></dt>
-      <dd class="goods-options-content"><ul class="goods-options-tags">${['Black', 'White'].map(li).join('')}</ul></dd></dl>
-    <dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Size</span></dt>
-      <dd class="goods-options-content"><ul class="goods-options-tags">${['S', 'M', 'L', 'XL'].map(li).join('')}</ul></dd></dl>
+  <div class="goods-options"><section class="sku-selector"><div class="goods-sizes">${o.late || o.notes ? '' : rowsHtml}</div>${o.notes ? notesHtml : ''}
+    <dl id="step2-goods-count" class="goods-options-row"><dt class="goods-options-label goods-mark">Quantity</dt>
+      <dd class="goods-options-content goods-options-content-count"><input class="goods-count" type="text" value="1"><div class="goods-count-btns"><i class="goods-count-add">+</i><i class="goods-count-reduce">-</i></div></dd></dl>
+    </section>
     <dl class="goods-options-row goods-options-freight"><dd class="new-goods-options-content">Superbuy Warehouse</dd></dl>
   </div>
-  <div class="goods-commit"><button class="goods-buyNow">Buy Now</button><button class="goods-addToCart">Add To Cart</button></div>
+  ${o.consent ? '<div class="rules-container"><div class="rules-operation"><label class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"></span><span>I have read and agree</span></label></div></div>' : ''}
+  <div class="goods-commit"><button class="goods-buyNow"${off}>Buy Now</button><button class="goods-addToCart"${off}>Add To Cart</button></div>
 </div></div>
 <script>
 const item = (new URLSearchParams(location.search).get('url') || '').replace(/^.*[=/]/, '').replace(/\\D/g, '');
 const log = (what) => { const all = JSON.parse(localStorage.getItem('rhLog') || '[]'); all.push(what); localStorage.setItem('rhLog', JSON.stringify(all)); };
-for (const li of document.querySelectorAll('.goods-options-tags li')) li.addEventListener('click', () => {
-  if (li.classList.contains('disabled')) return;
+document.addEventListener('click', (e) => {
+  const li = e.target.closest && e.target.closest('.goods-options-tags li');
+  if (!li || li.classList.contains('disabled')) return;
   for (const x of li.parentElement.children) x.classList.remove('active');
   li.classList.add('active');
 });
+// Rows that arrive a while after the name (a slow listing): the button stays off until they are there.
+const lateRows = ${JSON.stringify(o.late ? rowsHtml : '')};
+if (lateRows) setTimeout(() => {
+  document.querySelector('.goods-sizes').innerHTML = lateRows;
+  for (const b of document.querySelectorAll('.goods-commit button')) b.disabled = false;
+}, ${Number(o.late) || 0});
+const count = document.querySelector('.goods-count');
+document.querySelector('.goods-count-add').addEventListener('click', () => (count.value = String(Number(count.value) + 1)));
+const box = document.querySelector('.rules-operation input');
+// Like the live site, the tick is remembered for the next listing.
+if (box) {
+  const apply = () => { for (const b of document.querySelectorAll('.goods-commit button')) b.disabled = !box.checked; };
+  box.checked = localStorage.getItem('buy-risk-rules-checked') === 'true';
+  apply();
+  box.addEventListener('change', () => { localStorage.setItem('buy-risk-rules-checked', String(box.checked)); apply(); });
+}
+const dialog = (type, title, message) => {
+  const d = document.createElement('div');
+  d.innerHTML = '<div class="ant-modal-wrap"><div class="ant-modal alert-dialog alert-dialog-' + type + '"><div class="alert-dialog-content"><div class="alert-dialog-body"><div class="alert-dialog-text"><div class="alert-dialog-title">' + title + '</div><div class="alert-dialog-message"><p>' + message + '</p></div></div></div></div></div></div>';
+  document.body.appendChild(d);
+};
 document.querySelector('.goods-buyNow').addEventListener('click', () => log('BUY ' + item));
 document.querySelector('.goods-addToCart').addEventListener('click', () => {
-  log(item + ' ' + Array.from(document.querySelectorAll('.goods-options-tags')).map((l) => (l.querySelector('li.active') || {}).textContent).join('/'));
-  if (${JSON.stringify(o.confirm)} !== 'toast') return;
-  const n = document.createElement('div'); n.className = 'ant-message-notice';
-  n.innerHTML = '<div class="ant-message-success">Added to cart</div>';
-  document.body.appendChild(n);
+  log(item + ' ' + Array.from(document.querySelectorAll('.goods-options-tags')).map((l) => (l.querySelector('li.active') || {}).textContent).join('/') + (Number(count.value) > 1 ? ' x' + count.value : ''));
+  if (${JSON.stringify(o.fail)}) return dialog('error', 'Add to cart failed!', 'Please try again later');
+  if (${JSON.stringify(o.confirm)} === 'dialog') dialog('success', 'Add to cart successfully!', '<a href="/en/page/shoppingcart/" target="blank">View my cart ></a>');
 });
 </script></body></html>`;
 }
@@ -327,7 +359,33 @@ const SHEET_TAB = {
   }));
   check('first run: the list is dark by default', fresh.theme === 'dark' && fresh.bg === 'rgb(18, 21, 28)', fresh);
   check('first run: no agent is preselected; the list asks which one you use', fresh.pick && fresh.select === '' && /your agent/.test(fresh.selectText) && fresh.unset && fresh.agents.includes('Superbuy') && fresh.agents.includes('CNFans'), fresh);
-  if (SHOTS) await first.screenshot({ path: path.join(SHOTS, 'panel-first-run.png') });
+  const welcome = await first.evaluate(() => ({
+    setup: !document.getElementById('view-setup').hidden, listHidden: document.getElementById('view-list').hidden,
+    agents: Array.from(document.querySelectorAll('#setup-agents button')).map((b) => b.textContent), on: document.querySelectorAll('#setup-agents button.on').length,
+    sizes: document.querySelectorAll('#view-setup [data-size]').length, start: document.getElementById('setup-done').textContent,
+  }));
+  check('first run: a welcome screen asks for your agent and your sizes, with nothing chosen for you', welcome.setup && welcome.listHidden && welcome.agents.includes('Superbuy') && welcome.on === 0 && welcome.sizes === 5 && /Pick your agent/.test(welcome.start), welcome);
+  if (SHOTS) await first.screenshot({ path: path.join(SHOTS, 'panel-first-run.png'), fullPage: true });
+  await first.type('#view-setup [data-size="shoes"]', '44');
+  await first.type('#view-setup [data-size="tops"]', 'XL');
+  await first.click('#setup-done');
+  await sleep(600);
+  const stay = await first.evaluate(() => ({ setup: !document.getElementById('view-setup').hidden, toast: (document.querySelector('#toasts .toast') || {}).textContent || '' }));
+  const typed = (await store(['settings'])).settings;
+  check('the welcome screen does not finish without an agent, and keeps the sizes you typed', stay.setup && /Pick your shopping agent/.test(stay.toast) && typed.sizes.shoes === '44' && typed.sizes.tops === 'XL' && !typed.setupDone, { stay, sizes: typed.sizes });
+  await first.evaluate(() => Array.from(document.querySelectorAll('#setup-agents button')).find((b) => b.textContent === 'Superbuy').click());
+  await until(async () => (await store(['settings'])).settings.agent === 'superbuy', 4000);
+  await sleep(300);
+  const chosenOn = await first.evaluate(() => ({ on: Array.from(document.querySelectorAll('#setup-agents button.on')).map((b) => b.textContent), start: document.getElementById('setup-done').textContent }));
+  await first.click('#setup-done');
+  await sleep(600);
+  const after = await first.evaluate(() => ({ setup: !document.getElementById('view-setup').hidden, list: !document.getElementById('view-list').hidden, agent: document.getElementById('q-agent').value }));
+  check('picking an agent and pressing Start opens the list with that agent; the welcome screen is done', chosenOn.on.join() === 'Superbuy' && /Start using RepHop/.test(chosenOn.start) && !after.setup && after.list && after.agent === 'superbuy' && (await store(['settings'])).settings.setupDone === true, { chosenOn, after });
+  await first.reload({ waitUntil: 'domcontentloaded' });
+  await sleep(800);
+  check('the welcome screen does not come back on the next visit', await first.evaluate(() => document.getElementById('view-setup').hidden && !document.getElementById('view-list').hidden));
+  // The rest of the suite starts from "no agent chosen, no sizes", as a user who pressed Skip would.
+  await sw.evaluate(() => handlers.settings({ patch: { agent: '', sizes: { shoes: '', tops: '', bottoms: '', belts: '', hats: '' } } }));
   await first.close();
 
   // =============================================================== 1. Reddit
@@ -350,7 +408,7 @@ const SHEET_TAB = {
   // "Not now" still honours the click: the plain link opens in a new tab, and the question comes back next time
   await clickUi(reddit, rw, () => Array.from(ui().querySelectorAll('.chooser button')).find((b) => b.textContent === 'Not now'));
   const plain = await until(async () => (await browser.pages()).find((p) => /weidian\.com\/item\.html\?itemID=7237185689/.test(p.url())), 6000);
-  check('"Not now" opens the plain link instead of swallowing the click', !!plain && !(await store(['settings'])).settings, plain ? plain.url() : 'no tab');
+  check('"Not now" opens the plain link instead of swallowing the click', !!plain && !((await store(['settings'])).settings || {}).agent, plain ? plain.url() : 'no tab');
   if (plain) await plain.close();
   await reddit.bringToFront();
   await reddit.click('#l1');
@@ -648,7 +706,7 @@ const SHEET_TAB = {
   const sbBar = await barOf(sbw);
   check('on the agent page the bar shows Saved + QC, not "Open in Superbuy"', sbBar.on && !sbBar.open && /Saved to RepHop/.test(sbBar.save || '') && !!sbBar.qc, sbBar);
   await sb.click('button.goods-addToCart');
-  t = await until(async () => (await toastsOf(sbw)).find((x) => /Did that go into your cart/.test(x.text)), 5000);
+  t = await until(async () => (await toastsOf(sbw)).find((x) => /Did that go into your cart/.test(x.text)), 12000);
   check('Add To Cart with no confirmation from the site: RepHop asks instead of guessing', !!t && (await item('taobao:675330231400')).status === 'saved', t);
   await clickToast(sb, sbw, 'Yes, mark it', 'Did that go into your cart');
   check('answering yes marks it in cart', await until(async () => (await item('taobao:675330231400')).status === 'carted'));
@@ -938,7 +996,8 @@ const SHEET_TAB = {
     }
   }
   const run = await until(async () => { const st = await store(['cartRun', 'queue']); return st.cartRun && !st.queue.active ? st.cartRun : null; }, 15000);
-  check('the run ends with a report: two added for you, one added by you, one skipped', !!run && run.results['taobao:675330231400'] === 'added' && run.results['weidian:7237185689'] === 'manual' && run.results['weidian:7231112223'] === 'skipped' && run.results['weidian:7255555551'] === 'added', run);
+  const stepOf = (key) => (started ? started.keys.indexOf(key) : -1);
+  check('the run ends with a report: two added for you, one added by you, one skipped', !!run && run.results[stepOf('taobao:675330231400')] === 'added' && run.results[stepOf('weidian:7237185689')] === 'manual' && run.results[stepOf('weidian:7231112223')] === 'skipped' && run.results[stepOf('weidian:7255555551')] === 'added', run);
   const finalLog = (await logOf()) || [];
   check('across the whole run: one press per item, none in the other tab showing the same listing, the sold-out item never added, Buy Now never touched', finalLog.slice().sort().join(' | ') === ['675330231400 White/M', '7237185689 White/L', '7255555551 Black/S'].sort().join(' | '), finalLog);
   check('the skipped item is still not marked as in cart', (await item('weidian:7231112223')).status === 'saved');
@@ -982,6 +1041,229 @@ const SHEET_TAB = {
   await cn.close();
   await sw.evaluate(() => handlers.settings({ patch: { agent: 'superbuy' } }));
   await sw.evaluate(() => chrome.storage.local.remove('cartRun'));
+
+  // ============================== 5b. one item, straight from its card; drop-downs
+  //   E  weidian:7266666661  "Consent tee", White picked, two of them; the listing has the risk notice unticked
+  //   F  weidian:7266666663  the site answers Add To Cart with "Add to cart failed!"
+  const more = { 7266666661: { consent: true }, 7266666663: { fail: true }, 7266666667: { late: 3000 }, 7266666668: { notes: true } };
+  const serveMore = (req) => {
+    const u = req.url();
+    if (!u.startsWith('https://www.superbuy.com/en/page/buy/')) return req.continue();
+    const id = (decodeURIComponent(u).match(/(\d{9,})\D*$/) || [])[1];
+    req.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: optionStub(more[id]) });
+  };
+  await sw.evaluate(async () => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666661', label: 'Consent tee' }, { url: 'https://weidian.com/item.html?itemID=7266666663', label: 'Refused hoodie' }]);
+    await updateItems(['weidian:7266666661'], { options: [{ n: 'Color', v: 'White' }], qty: 2 });
+    await updateItems(['weidian:7266666663'], { options: [{ n: 'Color', v: 'Black' }, { n: 'Size', v: 'M' }] });
+  });
+  await closeAgentTabs();
+  await sw.evaluate(() => openLink({ key: 'weidian:7266666661', disposition: 'reuse' }, null));
+  const one = await until(async () => (await agentTabs())[0], 8000);
+  await one.setRequestInterception(true);
+  one.on('request', serveMore);
+  const ow = await world(one);
+  await one.reload({ waitUntil: 'domcontentloaded' });
+  await one.evaluate(() => localStorage.removeItem('rhLog'));
+  const oneLog = () => one.evaluate(() => JSON.parse(localStorage.getItem('rhLog') || '[]')).catch(() => null);
+  // Looking at the listing is enough for RepHop to learn which choices it offers.
+  const learnt = await until(async () => { const it = await item('weidian:7266666661'); return it && it.choicesFrom === 'agent' ? it : null; }, 8000);
+  check('opening a listing at the agent teaches RepHop its choices', !!learnt && JSON.stringify(learnt.choices) === JSON.stringify([{ n: 'Color', o: ['Black', 'White'] }, { n: 'Size', o: ['S', 'M', 'L', 'XL'] }]), learnt && learnt.choices);
+
+  await panel.bringToFront();
+  await panel.click('.tabs [data-view="list"]');
+  await sleep(700);
+  const cardOfKey = (key) => panel.evaluate((key) => {
+    const li = Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === key);
+    if (!li) return null;
+    return {
+      selects: Array.from(li.querySelectorAll('.opts select')).map((sel) => ({ label: sel.options[0].textContent, value: sel.selectedOptions[0].textContent, n: sel.options.length, unset: sel.classList.contains('unset') })),
+      acts: Array.from(li.querySelectorAll('.acts button')).map((b) => b.textContent), hint: (li.querySelector('.opts-hint') || {}).textContent || '',
+    };
+  }, key);
+  const cardE = await cardOfKey('weidian:7266666661');
+  check('each card has an Add to cart button and a drop-down per row of choices; your size is filled in from "My sizes"', !!cardE && cardE.acts.includes('Add to cart') && cardE.selects.length === 2 && cardE.selects[0].label === 'Color…' && cardE.selects[0].value === 'White' && cardE.selects[1].value === 'L (my size)' && cardE.selects[1].n === 5, cardE);
+  if (SHOTS) await panel.screenshot({ path: path.join(SHOTS, 'panel-dropdowns.png') });
+  // a drop-down changes what will be added
+  // (item B from the run above: White / L, learnt from its listing)
+  await panel.evaluate(() => {
+    const li = Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === 'weidian:7237185689');
+    const sel = li.querySelectorAll('.opts select')[1];
+    sel.value = '3';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const reB = await until(async () => { const it = await item('weidian:7237185689'); return (it.options || []).some((o) => o.v === 'XL') ? it : null; }, 4000);
+  check('choosing from a drop-down stores the pick with the item (one pick per row)', !!reB && reB.options.length === 2 && reB.options.some((o) => o.n === 'Color' && o.v === 'White') && reB.options.some((o) => o.n === 'Size' && o.v === 'XL'), reB && reB.options);
+  // A real Weidian item whose listing was never opened at the agent: its rows come from Weidian itself.
+  const fromWeidian = await until(async () => { const it = await item('weidian:7870660857'); return it && it.choicesFrom === 'weidian' && (it.choices || []).length ? it : null; }, 12000);
+  await sleep(500);
+  const cardW = await cardOfKey('weidian:7870660857');
+  const blackW = await panel.evaluate(() => Array.from(Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === 'weidian:7870660857').querySelectorAll('.opts select option')).map((o) => o.textContent));
+  check('a Weidian item gets its drop-downs straight from Weidian, before the listing was ever opened, with common Chinese words translated', !!fromWeidian && !!cardW && cardW.selects.length === fromWeidian.choices.length && cardW.selects[0].label === 'Color…' && blackW.includes('黑色 · Black') && cardW.selects.some((x) => x.label === 'Size…'), { choices: fromWeidian && fromWeidian.choices, card: cardW });
+  const cardT = await cardOfKey('taobao:699999999999');
+  check('a Taobao item that was never opened says where its choices will come from', !!cardT && cardT.selects.length === 0 && /after you open it once/.test(cardT.hint) && cardT.acts.includes('Add to cart'), cardT);
+
+  // E: the button on the card adds that one item
+  const pressCart = (key) => panel.evaluate((key) => Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === key).querySelector('.acts .cart').click(), key);
+  await pressCart('weidian:7266666661');
+  const single = await until(async () => { const st = await store(['queue']); return st.queue && st.queue.active && st.queue.auto && st.queue.tabId != null ? st.queue : null; }, 8000);
+  check('"Add to cart" on a card starts a run for just that item, with nothing selected', !!single && single.keys.join() === 'weidian:7266666661', single && single.keys);
+  const tick = await until(async () => { const b = await barOf(ow).catch(() => null); return b && b.q && /Tick/.test(b.q) ? b : null; }, 30000, 400);
+  const before = await one.evaluate(() => ({ picked: Array.from(document.querySelectorAll('.goods-options-tags li.active')).map((li) => li.textContent), count: document.querySelector('.goods-count').value, ticked: document.querySelector('.rules-operation input').checked }));
+  check('E: RepHop sets White / L and quantity 2, then waits at the site\'s agreement box: it does not tick it and presses nothing', !!tick && before.picked.join() === 'White,L' && before.count === '2' && before.ticked === false && ((await oneLog()) || []).length === 0, { bar: tick && tick.q, before, log: await oneLog() });
+  if (SHOTS) await one.screenshot({ path: path.join(SHOTS, 'autocart-consent.png') });
+  await one.bringToFront();
+  await one.click('.rules-operation input');
+  const doneE = await until(async () => (await item('weidian:7266666661')).status === 'carted', 15000);
+  check('E: once you tick the box yourself, RepHop presses Add To Cart once and reads the site\'s success dialog', doneE && ((await oneLog()) || []).join() === '7266666661 White/L x2', { log: await oneLog(), status: (await item('weidian:7266666661')).status });
+  const runE = await until(async () => { const st = await store(['cartRun', 'queue']); return st.cartRun && !st.queue.active ? st.cartRun : null; }, 10000);
+  check('E: the one-item run finishes by itself', !!runE && runE.total === 1 && runE.results[0] === 'added', runE);
+  await panel.bringToFront();
+  await sleep(500);
+  const afterE = await cardOfKey('weidian:7266666661');
+  check('E: the card now says it is in the cart', !!afterE && afterE.acts.includes('✓ In cart') && !afterE.acts.includes('Add to cart'), afterE && afterE.acts);
+
+  // F: the site refuses
+  await pressCart('weidian:7266666663');
+  await until(async () => { const st = await store(['queue']); return st.queue && st.queue.active && st.queue.tabId != null; }, 8000);
+  const refusedF = await until(async () => (await toastsOf(ow).catch(() => [])).find((x) => /did not accept/.test(x.text)), 30000, 400);
+  check('F: when the site answers "Add to cart failed!", RepHop reports the refusal and marks nothing (the words "add to cart" are not taken as success)', !!refusedF && /Add to cart failed|Please try again later/.test(refusedF.text) && (await item('weidian:7266666663')).status === 'saved' && ((await oneLog()) || []).filter((x) => x.startsWith('7266666663')).join() === '7266666663 Black/M', { toast: refusedF, log: await oneLog() });
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
+  await sw.evaluate(() => chrome.storage.local.remove('cartRun'));
+
+  // G: the rows of choices arrive three seconds after the name; H: no rows at all, only a notes box
+  await sw.evaluate(async () => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666667', label: 'Late tee' }, { url: 'https://weidian.com/item.html?itemID=7266666668', label: 'Notes cap' }]);
+    await updateItems(['weidian:7266666668'], { qty: 3 });
+  });
+  await sw.evaluate(() => queueOp({ op: 'start', auto: true, keys: ['weidian:7266666667'] }, null));
+  const lateAsk = await until(async () => { const b = await barOf(ow).catch(() => null); return b && b.q && /Pick Color/i.test(b.q) ? b : null; }, 40000, 400);
+  const lateState = await one.evaluate(() => Array.from(document.querySelectorAll('.goods-options-tags li.active')).map((li) => li.textContent)).catch(() => []);
+  check('G: rows that arrive late are still decided before anything is pressed (your size is set, the colour is asked for, the site\'s pre-selection is not added)', !!lateAsk && lateState.join() === 'Black,L' && !((await oneLog()) || []).some((x) => x.startsWith('7266666667')), { bar: lateAsk && lateAsk.q, lateState, log: await oneLog() });
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
+  await sw.evaluate(() => queueOp({ op: 'start', auto: true, keys: ['weidian:7266666668'] }, null));
+  const notesAsk = await until(async () => (await toastsOf(ow).catch(() => [])).find((x) => /no buttons for its choices/.test(x.text)), 30000, 400);
+  await sleep(1500);
+  check('H: a listing with a notes box instead of choices is handed to you, never added with empty notes', !!notesAsk && /Wanted: ×3/.test(notesAsk.text) && !((await oneLog()) || []).some((x) => x.startsWith('7266666668')) && (await item('weidian:7266666668')).status === 'saved', { toast: notesAsk, log: await oneLog() });
+  // two presses on "Skip" in quick succession move one step, not two
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
+  const twice = await sw.evaluate(async () => {
+    await queueOp({ op: 'start', keys: ['weidian:7266666661', 'weidian:7266666663', 'weidian:7266666667'] }, null);
+    const res = await Promise.all([queueOp({ op: 'step', delta: 1, at: 0 }, null), queueOp({ op: 'step', delta: 1, at: 0 }, null)]);
+    const q = (await chrome.storage.local.get('queue')).queue;
+    await queueOp({ op: 'stop' }, null);
+    return { i: q.i, stale: res.map((r) => !!r.stale) };
+  });
+  check('two quick presses on Next move one step: the second, aimed at the old position, is ignored', twice.i === 1 && twice.stale.join() === 'false,true', twice);
+  await sw.evaluate(() => chrome.storage.local.remove('cartRun'));
+  await sw.evaluate(() => removeItems(['weidian:7266666667', 'weidian:7266666668']));
+
+  // ====================================================== 5c. group haul
+  await panel.bringToFront();
+  await panel.click('.tabs [data-view="group"]');
+  await sleep(400);
+  const emptyGroup = await panel.evaluate(() => ({ empty: !document.getElementById('g-empty').hidden, body: document.getElementById('g-body').hidden }));
+  check('Group tab: with no friends added it explains how a group haul works', emptyGroup.empty && emptyGroup.body, emptyGroup);
+  // "Share my list": the code holds my items with the choices I made, and my size as text
+  await panel.evaluate(() => { navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
+  await panel.click('#g-share');
+  await sleep(300);
+  await panel.click('#g-copy');
+  await sleep(400);
+  const noName = await panel.evaluate(() => ({ copied: window.__copied || '', toast: Array.from(document.querySelectorAll('#toasts .toast')).map((t) => t.textContent).join(' | ') }));
+  check('sharing asks for your name first', !noName.copied && /Type your name first/.test(noName.toast), noName);
+  await panel.type('#g-me', 'Ahmed');
+  await panel.click('#g-copy');
+  const code = await until(() => panel.evaluate(() => window.__copied || ''), 5000);
+  const decoded = await panel.evaluate((c) => RepUtil.decodeShare('yo here is my list ' + c + ' thanks'), code);
+  const mineE = decoded && decoded.items.find((x) => x.key === 'weidian:7266666661');
+  check('"Copy share code" gives one line of text that carries each item with its options, quantity and size', /^RH1\.[A-Za-z0-9_-]+$/.test(code) && !!decoded && decoded.name === 'Ahmed' && decoded.items.length >= 8 && !decoded.items.some((x) => x.key.startsWith('yupoo:')) && !!mineE && mineE.qty === 2 && mineE.size === 'L' && mineE.options.some((o) => o.v === 'White'), { length: code.length, name: decoded && decoded.name, n: decoded && decoded.items.length, mineE });
+  // a friend's code arrives
+  const samCode = await panel.evaluate(async () => RepUtil.encodeShare({ app: 'RepHop', haul: 1, name: 'Sam', at: Date.now(), items: [
+    { k: 'weidian:7266666662', t: 'Sam hoodie', p: 100, q: 2, o: [['Color', 'Black']], s: 'XL' },
+    { k: 'weidian:7266666661', t: 'Same tee as Ahmed', p: 50, o: [['Color', 'Black'], ['Size', 'S']] },
+    { k: 'yupoo:nope/1', t: 'not a product' }, { k: 'junk' },
+  ] }));
+  await panel.click('#g-add');
+  await panel.evaluate(() => { document.getElementById('g-code').value = 'not a code'; });
+  await panel.click('#g-import');
+  await sleep(500);
+  const badCode = await panel.evaluate(() => Array.from(document.querySelectorAll('#toasts .toast')).map((t) => t.textContent).join(' | '));
+  check('pasting something that is not a share code is refused politely', /not a RepHop share code/.test(badCode) && !((await store(['group'])).group || { people: [] }).people.length, badCode);
+  await panel.evaluate((c) => { document.getElementById('g-code').value = 'Sam: ' + c; }, samCode);
+  await panel.click('#g-import');
+  const sam = await until(async () => { const g = (await store(['group'])).group; return g && g.people.length ? g.people[0] : null; }, 5000);
+  check('a friend\'s code adds their list, cleaned: products only, each with an id of its own', !!sam && sam.name === 'Sam' && sam.items.length === 2 && sam.items[0].uid !== sam.items[1].uid && sam.items[0].size === 'XL' && sam.items[0].qty === 2, sam);
+  await sleep(600);
+  await panel.evaluate(() => { const el = document.getElementById('g-extra'); el.value = '10'; el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await until(async () => ((await store(['group'])).group || {}).extra === 10, 4000);
+  await sleep(500);
+  const table = await panel.evaluate(() => ({
+    sum: document.getElementById('g-sum').textContent, note: document.getElementById('g-sum-note').textContent,
+    rows: Array.from(document.querySelectorAll('#g-rows tr')).map((tr) => Array.from(tr.children).map((td) => td.textContent)),
+    heads: Array.from(document.querySelectorAll('#g-people .g-head b')).map((b) => b.textContent),
+    samPicks: Array.from(document.querySelectorAll('#g-people .g-person')).pop().querySelector('.badge.picked').textContent,
+  }));
+  const samRow = table.rows.find((r) => /^Sam/.test(r[0])) || [];
+  check('the haul shows everyone: a total, a row per person with what they owe, and each item with that person\'s choices', table.rows.length === 2 && /^Ahmed \(you\)/.test(table.rows[0][0]) && /¥250/.test(samRow[1]) && /5\.00/.test(samRow[2]) && /2 people/.test(table.note) && table.heads.join() === 'Ahmed (you),Sam' && /Black · size XL/.test(table.samPicks), table);
+  if (SHOTS) await panel.screenshot({ path: path.join(SHOTS, 'panel-group.png'), fullPage: true });
+  await panel.select('#g-split', 'cost');
+  await sleep(500);
+  const byCost = await panel.evaluate(() => Array.from(document.querySelectorAll('#g-rows tr')).map((tr) => tr.children[2].textContent));
+  const shares = byCost.map((x) => parseFloat(x.replace(/[^\d.]/g, '')));
+  check('shipping can be split by item cost instead; the shares still add up to the amount entered', shares.length === 2 && Math.abs(shares[0] + shares[1] - 10) < 0.001 && shares[0] !== shares[1], byCost);
+  await panel.evaluate(() => document.querySelector('[data-gview="all"]').click());
+  await sleep(300);
+  const together = await panel.evaluate(() => Array.from(document.querySelectorAll('#g-people .item')).map((li) => li.querySelector('.badge.who').textContent + ': ' + li.querySelector('.title').textContent));
+  check('"All together" lists every item once per person, tagged with whose it is, the same product side by side', together.filter((x) => /^Sam: /.test(x)).length === 2 && Math.abs(together.indexOf('Sam: Same tee as Ahmed') - together.findIndex((x) => /^Ahmed \(you\): Consent tee/.test(x))) === 1, together);
+  await panel.evaluate(() => document.querySelector('[data-gview="people"]').click());
+  await sleep(300);
+
+  // the person ordering adds a friend's item: the friend's choices and size, never their own
+  await panel.evaluate(() => {
+    const sec = Array.from(document.querySelectorAll('#g-people .g-person')).find((x) => x.querySelector('.g-head b').textContent === 'Sam');
+    Array.from(sec.querySelectorAll('.item')).find((li) => /Sam hoodie/.test(li.textContent)).querySelector('.acts .cart').click();
+  });
+  const friendRun = await until(async () => { const st = await store(['queue']); return st.queue && st.queue.active && st.queue.auto && st.queue.tabId != null ? st.queue : null; }, 8000);
+  const samDone = await until(async () => { const g = (await store(['group'])).group; const it = g.people[0].items.find((x) => x.key === 'weidian:7266666662'); return it.status === 'carted' ? it : null; }, 30000, 400);
+  check('Add to cart on a friend\'s item uses their colour, their size (XL, not my L) and their quantity, and marks it in their list', !!friendRun && !!friendRun.owner && friendRun.owner[0].p === 'sam' && !!samDone && ((await oneLog()) || []).includes('7266666662 Black/XL x2') && !(await item('weidian:7266666662')), { owner: friendRun && friendRun.owner, log: await oneLog() });
+  await until(async () => !(await store(['queue'])).queue.active, 8000);
+  // the same product for two people: my copy is already in the cart, Sam's is added with Sam's choices
+  await panel.bringToFront();
+  await sleep(400);
+  await panel.evaluate(() => {
+    const sec = Array.from(document.querySelectorAll('#g-people .g-person')).find((x) => x.querySelector('.g-head b').textContent === 'Sam');
+    Array.from(sec.querySelectorAll('.g-head button')).find((b) => /Add \d+ to cart/.test(b.textContent)).click();
+  });
+  const samTee = await until(async () => { const g = (await store(['group'])).group; const it = g.people[0].items.find((x) => x.key === 'weidian:7266666661'); return it.status === 'carted' ? it : null; }, 40000, 400);
+  const teeLog = ((await oneLog()) || []).filter((x) => x.startsWith('7266666661'));
+  check('the same product wanted by two people is added once for each, with each person\'s own choices', !!samTee && teeLog.join(' | ') === '7266666661 White/L x2 | 7266666661 Black/S', teeLog);
+  await until(async () => !(await store(['queue'])).queue.active, 8000);
+  await sw.evaluate(() => chrome.storage.local.remove('cartRun'));
+  await panel.bringToFront();
+  await sleep(400);
+  await panel.evaluate(() => { const sec = Array.from(document.querySelectorAll('#g-people .g-person')).find((x) => x.querySelector('.g-head b').textContent === 'Sam'); sec.querySelector('.g-head .danger').click(); });
+  await sleep(200);
+  await panel.evaluate(() => { const sec = Array.from(document.querySelectorAll('#g-people .g-person')).find((x) => x.querySelector('.g-head b').textContent === 'Sam'); sec.querySelector('.g-head .danger').click(); });
+  check('a friend can be taken out of the haul (asked twice)', await until(async () => !(await store(['group'])).group.people.length, 4000));
+  await panel.evaluate(() => Array.from(document.querySelectorAll('#toasts .toast button')).find((b) => b.textContent === 'Undo').click());
+  check('and Undo puts their list back, statuses included', await until(async () => { const g = (await store(['group'])).group; return g.people.length === 1 && g.people[0].items.every((x) => x.status === 'carted'); }, 4000));
+  const regroup = await sw.evaluate(async () => {
+    await handlers.group({ op: 'clear' });
+    const from = (items) => ({ name: 'Sam', sid: 'aaaaaaaa1111', items });
+    await handlers.group({ op: 'add', person: from([{ k: 'weidian:7266666662', t: 'Tee', o: [['Color', 'Black']] }, { k: 'weidian:7266666664', t: 'Cap' }]) });
+    let g = (await chrome.storage.local.get('group')).group;
+    for (const it of g.people[0].items) await handlers.group({ op: 'mark', id: g.people[0].id, uid: it.uid, status: 'carted', options: [{ n: 'Color', v: 'black, as the agent words it' }] });
+    const upd = await handlers.group({ op: 'add', person: from([{ k: 'weidian:7266666662', t: 'Tee', o: [['Color', 'Black']] }, { k: 'weidian:7266666664', t: 'Cap', q: 2 }, { k: 'weidian:7266666665', t: 'Belt' }]) });
+    const other = await handlers.group({ op: 'add', person: { name: 'sam', sid: 'bbbbbbbb2222', items: [{ k: 'weidian:7266666666', t: 'Another Sam' }] } });
+    g = (await chrome.storage.local.get('group')).group;
+    return { kept: upd.kept, other: other.name, people: g.people.map((p) => p.name + ': ' + p.items.map((x) => x.title + ' ' + x.status + (x.options.length ? ' ' + x.options[0].v : '')).join(', ')) };
+  });
+  check('a newer code from the same person keeps what is already in the cart (if still wanted the same way) and leaves their wishes as they wrote them; a namesake is added beside them, not over them',
+    regroup.kept === 1 && regroup.other === 'sam (2)' && regroup.people.join(' | ') === 'Sam: Tee carted Black, Cap saved, Belt saved | sam (2): Another Sam saved', regroup);
+  await sw.evaluate(() => handlers.group({ op: 'clear' }));
+  await closeAgentTabs();
+  await panel.click('.tabs [data-view="list"]');
 
   // ======================================================== 6. Google Sheets
   const sheetRoutes = [
@@ -1265,6 +1547,45 @@ const SHEET_TAB = {
       await page.close();
     }
   }
+
+  // ============================== the list restarts a RepHop that Chrome kept from before an update
+  // Chrome goes on running the background it loaded when the files in the folder are replaced. Here the
+  // running background is made to look like an older build (it no longer knows the "version" question).
+  for (const p of await browser.pages()) if (p.url().includes('panel.html')) await p.close();
+  const fineList = await browser.newPage();
+  await fineList.goto('chrome-extension://' + extId + '/panel/panel.html', { waitUntil: 'domcontentloaded' });
+  await sleep(3000);
+  const fine = await fineList.evaluate(() => ({ stale: !document.getElementById('stale').hidden, build: document.getElementById('build').textContent, mark: localStorage.getItem('rhRestartAt') })).catch(() => null);
+  check('with the background up to date the list just opens (no restart) and shows its build', !!fine && !fine.stale && /^RepHop \d+\.\d+\.\d+$/.test(fine.build) && !fine.mark, fine);
+  await fineList.close();
+  // "Load unpacked" needs Developer mode, and so does an unpacked extension coming back after a restart.
+  // Every real install has it on; this test browser does not, so it is switched on here.
+  const devPage = await browser.newPage();
+  await devPage.goto('chrome://extensions', { waitUntil: 'domcontentloaded' });
+  await sleep(800);
+  await devPage.evaluate(() => chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }));
+  await devPage.close();
+  await sw.evaluate(() => { delete handlers.version; });
+  const oldList = await browser.newPage();
+  await oldList.goto('chrome-extension://' + extId + '/panel/panel.html', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  // the restart closes the extension's pages and starts a new background
+  const within = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
+  const restarted = await until(async () => {
+    // (the old background's entry can linger and no longer answers; the new one knows the question)
+    for (const t of (await browser.targets()).filter((x) => x.type() === 'service_worker' && x.url().includes(extId))) {
+      const w = await within(t.worker().catch(() => null), 1500);
+      if (w && (await within(w.evaluate(() => typeof handlers !== 'undefined' && typeof handlers.version === 'function').catch(() => false), 1500)) === true) return w;
+    }
+    return null;
+  }, 25000, 500);
+  check('a background left over from before an update is noticed by the list, which restarts RepHop by itself', !!restarted && (await restarted.evaluate(() => handlers.version().build)) === (await restarted.evaluate(() => chrome.runtime.getManifest().version)));
+  await sleep(1500);
+  const again = await browser.newPage();
+  await again.goto('chrome-extension://' + extId + '/panel/panel.html', { waitUntil: 'domcontentloaded' });
+  await sleep(3500);
+  const calm = await again.evaluate(() => ({ stale: !document.getElementById('stale').hidden, items: document.querySelectorAll('#items .item').length, mark: localStorage.getItem('rhRestartAt') })).catch(() => null);
+  check('after the restart the list opens normally, with the saved items still there, and does not restart again', !!calm && !calm.stale && calm.items > 5 && !calm.mark, calm);
+  await again.close().catch(() => {});
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + (results.length - failed.length) + '/' + results.length + ' passed');

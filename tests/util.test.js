@@ -405,3 +405,237 @@ test('remembered options are cleaned before they are stored', () => {
   assert.deepEqual(U.cleanOptions('nope'), []);
   assert.equal(U.cleanOptions(Array.from({ length: 20 }, (_, i) => ({ n: 'g' + i, v: 'v' }))).length, 8);
 });
+
+// ------------------------------------------------ choices, in two languages
+
+const rows = (spec) => spec.map(([name, ...texts]) => ({ name, options: texts.map((t) => (typeof t === 'string' ? { text: t } : t)) }));
+
+test('common Chinese option words are translated; nothing else is', () => {
+  assert.equal(U.zhHint('黑色'), 'Black');
+  assert.equal(U.zhHint('M码'), 'M');
+  assert.equal(U.zhHint('2XL码'), '2XL');
+  assert.equal(U.zhHint('43码'), '43');
+  assert.equal(U.zhHint('Black'), '', 'English is left alone');
+  assert.equal(U.zhHint('复古做旧款'), '', 'an unknown word is not guessed at');
+  assert.equal(U.zhHint('constructor'), '');
+  assert.equal(U.optionLabel('黑色'), '黑色 · Black');
+  assert.equal(U.optionLabel('Black'), 'Black');
+  assert.equal(U.groupLabel('颜色'), 'Color');
+  assert.equal(U.groupLabel('尺寸 衣服'), 'Size');
+  assert.equal(U.groupLabel('Colour'), 'Colour');
+  assert.equal(U.groupLabel(''), 'Option');
+});
+
+test('the choices of a listing are cut to size before they are stored', () => {
+  assert.deepEqual(U.cleanChoices([{ n: ' Color ', o: ['Black', ' Black ', '', 5, 'White'] }, { n: 'Empty', o: [] }, null, { o: 'x' }]), [{ n: 'Color', o: ['Black', 'White'] }]);
+  assert.equal(U.cleanChoices(Array.from({ length: 10 }, (_, i) => ({ n: 'g' + i, o: ['a'] }))).length, 6);
+  assert.equal(U.cleanChoices([{ n: 'x', o: Array.from({ length: 200 }, (_, i) => 'v' + i) }])[0].o.length, 60);
+  assert.deepEqual(U.cleanChoices('nope'), []);
+});
+
+test('planning a cart: every row needs a reason, and a choice that fits nowhere stops the add', () => {
+  const page = rows([['Color', 'black', 'white'], ['Size clothes', 'S code', 'M code', 'L code', 'XL']]);
+  // a pick made in Weidian's wording lands on the translated row; the size comes from "My sizes"
+  let r = U.planCart(page, { options: [{ n: '颜色', v: '白色' }], size: 'M' });
+  assert.deepEqual(r.rows, [{ pick: 1, from: 0 }, { pick: 1, from: 'size' }]);
+  assert.deepEqual(r.unused, []);
+  // "M码" picked on Weidian is the "M code" the agent shows
+  r = U.planCart(page, { options: [{ n: '颜色', v: '黑色' }, { n: '尺寸 衣服', v: 'M码' }] });
+  assert.deepEqual(r.rows.map((x) => x.pick), [0, 1]);
+  // a word RepHop cannot translate is never guessed: the row is asked for, and the pick is reported as unused
+  r = U.planCart(page, { options: [{ n: '颜色', v: '复古做旧款' }], size: 'L' });
+  assert.equal(r.rows[0].ask, 'pick Color');
+  assert.deepEqual(r.unused, [{ n: '颜色', v: '复古做旧款' }]);
+  // with nothing to go on, nothing is settled (whatever the site pre-selected counts for nothing)
+  r = U.planCart(page, {});
+  assert.deepEqual(r.rows.map((x) => x.ask), ['pick Color', 'pick Size clothes']);
+  // a row with one choice needs no decision, but an unused pick still stops the add
+  r = U.planCart(rows([['Color', 'black']]), { options: [{ n: '颜色', v: '奶白色定制' }] });
+  assert.deepEqual(r.rows, [{ pick: 0, from: 'only' }]);
+  assert.equal(r.unused.length, 1);
+  // sold out is reported, never swapped for a neighbour
+  r = U.planCart(rows([['Size', 'S', { text: 'M', disabled: true }, 'L']]), { size: 'M' });
+  assert.equal(r.rows[0].ask, '“M” is sold out');
+  // a remembered choice named for a row is looked for in that row only
+  r = U.planCart(rows([['Size', '42', '43'], ['Insole', '42', '43']]), { options: [{ n: 'Insole', v: '43' }] });
+  assert.deepEqual(r.rows[1], { pick: 1, from: 0 });
+  assert.equal(r.rows[0].ask, 'pick Size');
+  // a nameless choice that two rows offer is not assigned to either
+  r = U.planCart(rows([['A', '42', '43'], ['B', '42', '43']]), { options: [{ n: '', v: '43' }] });
+  assert.deepEqual(r.rows.map((x) => x.pick), [undefined, undefined]);
+  assert.equal(r.unused.length, 1);
+});
+
+// ---------------------------------------------------------------- group hauls
+
+test('a share code carries a list with each item\'s choices, and survives being pasted into a chat', async () => {
+  const settings = U.mergeSettings({ sizes: { tops: 'M', shoes: '43, 9.5' } });
+  const mine = [
+    { key: 'weidian:7237185689', platform: 'weidian', label: 'Triangle tee', price: 310, qty: 2, options: [{ n: 'Color', v: 'black' }], note: 'x'.repeat(500) },
+    { key: 'taobao:675330231400', platform: 'taobao', title: 'Dunk Low', price: 199.5, size: '44' },
+    { key: 'yupoo:seller/123', platform: 'yupoo', label: 'album only' },
+  ];
+  const obj = U.packShare('  Sam  ', mine, settings);
+  assert.equal(obj.name, 'Sam');
+  assert.equal(obj.items.length, 2, 'albums without a buy link are left out');
+  const code = await U.encodeShare(obj);
+  assert.match(code, /^RH[01]\.[A-Za-z0-9_-]+$/);
+  const back = await U.decodeShare('hey, my list:\n' + code + '\nthanks!');
+  assert.equal(back.name, 'Sam');
+  assert.deepEqual(back.items.map((x) => [x.key, x.title, x.price, x.qty, x.size]), [['weidian:7237185689', 'Triangle tee', 310, 2, 'M'], ['taobao:675330231400', 'Dunk Low', 199.5, 1, '44']]);
+  assert.deepEqual(back.items[0].options, [{ n: 'Color', v: 'black' }]);
+  assert.equal(back.items[0].note.length, 200);
+  assert.equal(back.items[0].url, 'https://weidian.com/item.html?itemID=7237185689', 'links are rebuilt from the product id, never taken from the code');
+  // a saved file is the same text; plain JSON is accepted too
+  assert.equal((await U.decodeShare(JSON.stringify(obj))).items.length, 2);
+});
+
+test('a share code from anywhere is treated as untrusted', async () => {
+  assert.equal(await U.decodeShare('just some text'), null);
+  assert.equal(await U.decodeShare('RH1.AAAAAAAAAAAA'), null);
+  assert.equal(await U.decodeShare('RH0.' + 'A'.repeat(500000)), null, 'oversized');
+  assert.equal(await U.decodeShare('{"app":"Other","items":[]}'), null);
+  const junk = await U.decodeShare(JSON.stringify({ app: 'RepHop', haul: 1, name: 'x'.repeat(99), items: [
+    { k: 'weidian:7111111111', t: '<img src=x onerror=alert(1)>', p: -5, q: 5000, o: [['a'.repeat(99), 'b'.repeat(999)], 'nope', [1, 2]], s: 7, image: 'javascript:alert(1)', url: 'https://evil.example/' },
+    { k: 'yupoo:a/1' }, { k: 'nonsense' }, null, 'str',
+  ] }));
+  assert.equal(junk.name.length, 30);
+  assert.equal(junk.items.length, 1);
+  const it = junk.items[0];
+  assert.equal(it.price, null);
+  assert.equal(it.qty, 99);
+  assert.equal(it.size, '');
+  assert.equal(it.image, undefined);
+  assert.equal(it.url, 'https://weidian.com/item.html?itemID=7111111111');
+  assert.equal(it.options.length, 1);
+  assert.equal(it.options[0].v.length, 80);
+  // a bomb: megabytes of zeros that deflate to almost nothing
+  const zeros = new Uint8Array(3000000);
+  const reader = new Blob([zeros]).stream().pipeThrough(new CompressionStream('deflate')).getReader();
+  const parts = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(...value);
+  }
+  const b64 = Buffer.from(parts).toString('base64url');
+  assert.equal(await U.decodeShare('RH1.' + b64), null, 'a code that unpacks to megabytes is refused');
+});
+
+test('who owes what: per-person totals, and shared costs that always add up', () => {
+  const people = [
+    { id: '', name: 'You', items: [{ price: 100, qty: 1 }, { price: null, qty: 1 }] },
+    { id: 'sam', name: 'Sam', items: [{ price: 200, qty: 1 }] },
+    { id: 'ali', name: 'Ali', items: [{ price: 50, qty: 2 }] },
+  ];
+  const rates = { rates: { USD: 0.14 } };
+  let t = U.groupTotals(people, rates, 'USD', 10, 'even');
+  assert.equal(t.yuan, 400);
+  assert.equal(t.items, 56);
+  assert.equal(t.total, 66);
+  assert.equal(t.count, 5);
+  assert.equal(t.unpriced, 1);
+  assert.deepEqual(t.rows.map((r) => r.share), [3.34, 3.33, 3.33], 'the odd cent goes to one person, so the shares add up');
+  assert.equal(Math.round(t.rows.reduce((a, r) => a + r.share, 0) * 100), 1000);
+  assert.deepEqual(t.rows.map((r) => r.owes), [17.34, 31.33, 17.33]);
+  t = U.groupTotals(people, rates, 'USD', 10, 'cost');
+  assert.deepEqual(t.rows.map((r) => r.share), [2.5, 5, 2.5]);
+  // in yuan nothing is converted
+  t = U.groupTotals(people, rates, 'CNY', 0, 'even');
+  assert.deepEqual(t.rows.map((r) => r.owes), [100, 200, 100]);
+  // someone with no items takes no share
+  t = U.groupTotals(people.concat({ id: 'x', name: 'Empty', items: [] }), rates, 'USD', 9, 'even');
+  assert.deepEqual(t.rows.map((r) => r.share), [3, 3, 3, 0]);
+  assert.deepEqual(U.groupTotals([], rates, 'USD', 5, 'even').rows, []);
+});
+
+// ------------------------------------------- found by the fourth review
+
+test('a choice you picked before only ever matches the very same choice', () => {
+  const o = (...texts) => texts.map((text) => ({ text }));
+  assert.equal(U.pickRemembered(o('Blue', 'Black/White'), 'Black'), -1, '"Black" is not "Black/White"');
+  assert.equal(U.pickRemembered(o('米白色', '黑色'), '白色'), -1, '白色 is not 米白色');
+  assert.equal(U.pickRemembered(o('酒红色'), '红色'), -1);
+  assert.equal(U.pickRemembered(o('黑色加绒', '白色'), '黑色'), -1);
+  assert.equal(U.pickRemembered(o('black', 'white'), '黑色'), 0, 'the same colour in the other language');
+  assert.equal(U.pickRemembered(o('黑色', '白色'), 'White'), 1);
+  assert.equal(U.pickRemembered(o('M code', 'L code'), 'M'), 0, 'the same size');
+  assert.equal(U.pickRemembered(o('M code', 'L code'), 'M码'), 0);
+  assert.equal(U.pickRemembered(o('XL', '2XL'), 'L'), -1);
+  assert.equal(U.pickRemembered(o('41', '42.5'), '42'), -1);
+  assert.equal(U.pickRemembered(o('  BLACK ', 'White'), 'black'), 0);
+  // and so the plan asks instead of putting a different colour in the cart
+  const plan = U.planCart([{ name: 'Color', options: o('Blue', 'Black/White') }], { options: [{ n: 'Color', v: 'Black' }] });
+  assert.equal(plan.rows[0].ask, '“Black” is not offered here (Color)');
+  // a colour typed under Edit is still looked for as a whole word, and Chinese characters count as letters
+  assert.equal(U.pickOption(o('米白色', '黑色'), '白色', true), -1);
+  assert.equal(U.pickOption(o('Blue', 'Black/White'), 'black', true), 1);
+});
+
+test('odd keys are not products', () => {
+  for (const key of ['constructor:1234567', '__proto__:1234567', 'toString:1234567', 'hasOwnProperty:1']) assert.equal(L.keyToItem(key), null, key);
+  assert.equal(U.sharedItem({ k: 'constructor:1234567' }), null);
+});
+
+test('a share says which copy of RepHop made it, and never carries a picture', async () => {
+  const obj = U.packShare('Sam', [{ key: 'weidian:7111111111', platform: 'weidian', title: 'Tee', image: 'https://si.geilicdn.com/x.jpg' }], U.mergeSettings(), 'abc123def456');
+  assert.equal(obj.sid, 'abc123def456');
+  assert.equal((await U.decodeShare(await U.encodeShare(obj))).sid, 'abc123def456');
+  assert.equal(U.packShare('Sam', [], U.mergeSettings(), '<script>').sid, undefined);
+  assert.equal(U.unpackShare({ app: 'RepHop', haul: 1, name: 'x', sid: '../../etc', items: [] }).sid, '');
+  assert.equal(U.sharedItem({ k: 'weidian:7111111111', image: 'https://tracker.example/p.gif' }).image, undefined);
+});
+
+test('what people owe adds up to the total shown, to the cent', () => {
+  const rates = { rates: { USD: 0.1403 } };
+  for (let n = 1; n <= 6; n++) {
+    for (const split of ['even', 'cost']) {
+      const people = Array.from({ length: n }, (_, i) => ({ id: String(i), name: 'P' + i, items: [{ price: 10 + i * 3.33, qty: 1 + (i % 2) }] }));
+      const t = U.groupTotals(people, rates, 'USD', 10, split);
+      const owed = Math.round(t.rows.reduce((a, r) => a + r.owes, 0) * 100);
+      assert.equal(owed, Math.round(t.total * 100), n + ' people, ' + split);
+    }
+  }
+});
+
+// ----------------------------------- seen on the live Superbuy listing
+
+test('a choice made in the seller\'s wording is found by its place on the agent\'s translated listing', () => {
+  const g = (name, ...texts) => ({ name, options: texts.map((text) => ({ text })) });
+  // Weidian item 7870660857 as Weidian lists it, and as Superbuy showed it on 2026-10-13
+  const seller = [{ n: '颜色', o: ['黑色', '藏蓝色', '灰色'] }, { n: '尺码', o: ['S', 'M', 'L', 'XL'] }];
+  const page = [g('Color', 'black', 'Dark blue', 'gray'), g('Size', 'S', 'M', 'L', 'XL')];
+  // 藏蓝色 is not a word RepHop translates; it is the second colour there and the second colour here
+  let r = U.planCart(page, { options: [{ n: '颜色', v: '藏蓝色' }], size: 'L', source: seller });
+  assert.deepEqual(r.rows, [{ pick: 1, from: 0 }, { pick: 2, from: 'size' }]);
+  assert.deepEqual(r.unused, []);
+  // "grey" in the dictionary is "gray" on the page
+  r = U.planCart(page, { options: [{ n: '颜色', v: '灰色' }, { n: '尺码', v: 'M' }] });
+  assert.deepEqual(r.rows.map((x) => x.pick), [2, 1]);
+  // without the seller's rows nothing is assumed
+  r = U.planCart(page, { options: [{ n: '颜色', v: '藏蓝色' }], size: 'L' });
+  assert.equal(r.rows[0].ask, 'pick Color');
+  // the agent shows the colours in another order: the readable ones are in the wrong places, so RepHop asks
+  r = U.planCart([g('Color', 'gray', 'Dark blue', 'black'), page[1]], { options: [{ n: '颜色', v: '藏蓝色' }], source: seller });
+  assert.equal(r.rows[0].ask, 'pick Color');
+  // one colour fewer on the agent's listing: not the same row
+  r = U.planCart([g('Color', 'black', 'gray'), page[1]], { options: [{ n: '颜色', v: '藏蓝色' }], source: seller });
+  assert.equal(r.rows[0].ask, 'pick Color');
+  // nothing readable and a row name that does not translate: no anchor, so RepHop asks
+  r = U.planCart([g('Version', 'A', 'B', 'C')], { options: [{ n: '批次', v: '二批' }], source: [{ n: '批次', o: ['一批', '二批', '三批'] }] });
+  assert.equal(r.rows[0].ask, 'pick Version');
+  // nothing readable, but the row's name translates to this row's name
+  r = U.planCart([g('Color', 'Retro', 'Aged', 'Washed')], { options: [{ n: '颜色', v: '做旧' }], source: [{ n: '颜色', o: ['复古', '做旧', '水洗'] }] });
+  assert.deepEqual(r.rows, [{ pick: 1, from: 0 }]);
+  // two rows of the same length that both fit: not decided
+  r = U.planCart([g('Color', 'Retro', 'Aged'), g('Color', 'One', 'Two')], { options: [{ n: '颜色', v: '做旧' }], source: [{ n: '颜色', o: ['复古', '做旧'] }] });
+  assert.equal(r.unused.length, 1);
+  // a sold-out choice found by its place is still reported, not replaced
+  r = U.planCart([{ name: 'Color', options: [{ text: 'black' }, { text: 'Dark blue', disabled: true }, { text: 'gray' }] }], { options: [{ n: '颜色', v: '藏蓝色' }], source: seller });
+  assert.equal(r.rows[0].ask, '“Dark blue” is sold out');
+});
+
+test('every part of RepHop knows which build it is', () => {
+  assert.match(U.BUILD, /^\d+\.\d+\.\d+$/);
+  assert.equal(U.BUILD, require('../manifest.json').version, 'the build in the code is the version in the manifest');
+});

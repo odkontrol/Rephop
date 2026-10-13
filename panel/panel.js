@@ -24,8 +24,8 @@
     return el;
   }
 
-  const KEYS = ['items', 'settings', 'folders', 'sellers', 'seen', 'rates', 'queue', 'syncState', 'cartRun'];
-  const data = { items: {}, settings: U.mergeSettings(), folders: U.DEFAULT_FOLDERS.slice(), sellers: {}, seen: {}, rates: null, queue: null, syncState: null, cartRun: null };
+  const KEYS = ['items', 'settings', 'folders', 'sellers', 'seen', 'rates', 'queue', 'syncState', 'cartRun', 'group'];
+  const data = { items: {}, settings: U.mergeSettings(), folders: U.DEFAULT_FOLDERS.slice(), sellers: {}, seen: {}, rates: null, queue: null, syncState: null, cartRun: null, group: null };
   let thisTab = null; // the product on the browser tab beside the panel, if there is one
   const view = { name: 'list', folder: '*', status: '', tag: '', seller: '', q: '', sort: 'new', selected: new Set(), openKey: null, limit: 120 };
   const asked = new Set();
@@ -238,7 +238,8 @@
     if (state === 'gone') meta.append(h('span', { class: 'badge bad', title: 'Weidian no longer lists this item' }, 'Removed?'));
     if (it.seller) meta.append(h('span', { class: 'badge' + (trusted(it) ? ' gold' : ''), title: trusted(it) ? 'Trusted seller' : 'Seller' }, (trusted(it) ? '★ ' : '') + sellerName(it.seller)));
     if (seen > 1) meta.append(h('span', { class: 'badge gold', title: 'You have seen this link in ' + seen + ' different posts' }, '×' + seen + ' posts'));
-    const chosen = (it.options || []).map((o) => o.v).concat((it.options || []).length ? [] : [it.style, it.size].filter(Boolean));
+    const hasChoices = (it.choices || []).length > 0;
+    const chosen = hasChoices ? [] : (it.options || []).map((o) => o.v).concat((it.options || []).length ? [] : [it.style, it.size].filter(Boolean));
     if (chosen.length) meta.append(h('span', { class: 'badge', title: (it.options || []).length ? 'What you picked on the listing. When RepHop adds this to your cart it looks for the same; if that is sold out or gone, it asks you.' : 'What RepHop will look for when it adds this to your cart' }, chosen.join(' · ')));
 
     const info = h('div', { class: 'info' },
@@ -255,11 +256,20 @@
 
     const bought = it.status === 'bought';
     const cartOn = it.status === 'carted';
+    // (A friend's copy of the same product being added in a group haul is not this card's business.)
+    const adding = !!(inQueue && data.queue.auto && !(Array.isArray(data.queue.owner) && data.queue.owner[data.queue.i]));
+    const cartBtn = it.platform === 'yupoo' ? null
+      : bought ? h('button', { type: 'button', class: 'on', title: 'Marked as bought. Change the status under Edit.', onclick: () => toast('This one is marked as bought. Change the status under Edit.') }, '✓ Bought')
+      : cartOn ? h('button', { type: 'button', class: 'on', title: 'In your cart. Click to unmark it (your cart itself is not changed).', 'aria-pressed': 'true',
+        onclick: async () => {
+          await send({ type: 'update', keys: [it.key], patch: { status: 'saved' } });
+          toast('Unmarked. Your cart at ' + agent.name + ' was not changed.', { action: { label: 'Undo', fn: () => send({ type: 'update', keys: [it.key], patch: { status: 'carted' } }) } });
+        } }, '✓ In cart')
+      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Open this at ' + agent.name + ', set its options and press Add To Cart', onclick: () => addOne(it) }, adding ? 'Adding…' : 'Add to cart');
     const acts = h('div', { class: 'acts' },
       h('button', { class: 'go primary', type: 'button', onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) }, it.platform === 'yupoo' ? 'Open album' : 'Open in ' + agent.name),
       it.platform !== 'yupoo' && h('button', { type: 'button', title: 'Look for QC photos of this item', onclick: () => send({ type: 'openTab', url: L.qcUrl(it, s) }) }, 'QC'),
-      h('button', { type: 'button', class: cartOn || bought ? 'on' : '', title: bought ? 'Marked as bought. Change the status under Edit.' : cartOn ? 'Marked as in cart. Click to unmark.' : 'Mark as added to cart', 'aria-pressed': String(cartOn || bought),
-        onclick: () => (bought ? toast('This one is marked as bought. Change the status under Edit.') : send({ type: 'update', keys: [it.key], patch: { status: cartOn ? 'saved' : 'carted' } })) }, bought ? '✓ Bought' : cartOn ? '✓ Cart' : 'Cart'),
+      cartBtn,
       h('button', { type: 'button', title: 'Edit, tag, move or delete', 'aria-expanded': String(isOpen), onclick: () => { view.openKey = isOpen ? null : it.key; render(); } }, isOpen ? 'Close' : 'Edit'));
 
     const li = h('li', { class: 'item' + (it.viewedAt ? ' viewed' : '') + (inQueue ? ' current' : '') },
@@ -268,6 +278,7 @@
         h('input', { type: 'checkbox', class: 'pick', checked: view.selected.has(it.key), 'aria-label': 'Select ' + U.displayTitle(it),
           onchange: (e) => { e.target.checked ? view.selected.add(it.key) : view.selected.delete(it.key); renderChrome(); } }),
         thumb(it), info),
+      choiceRow(it),
       acts);
     li.dataset.key = it.key;
     if (isOpen) li.append(editor(it));
@@ -378,16 +389,100 @@
     renderThisTab();
   }
 
-  /** "Add to cart for me": hand the items to the queue in automatic mode. */
+  function norm(t) {
+    return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  /** What RepHop would choose for an item, row by row, from its drop-downs, the item's own size and colour, and your sizes. */
+  function planFor(it) {
+    const groups = (it.choices || []).map((c) => ({ name: c.n, options: c.o.map((t) => ({ text: t })) }));
+    return { groups, plan: U.planCart(groups, { options: it.options || [], size: U.sizeFor(it, data.settings), style: it.style || '', source: it.wd || [] }) };
+  }
+
+  /** The drop-downs for a listing's choices (colour, size…). Changing one stores your pick with the item. */
+  function choiceRow(it) {
+    if (it.platform === 'yupoo') return null;
+    const { groups, plan } = planFor(it);
+    if (!groups.length) {
+      // Taobao and 1688 only tell us their choices on the agent's listing.
+      if (it.platform === 'weidian' || it.status !== 'saved' || (it.options || []).length) return null;
+      return h('div', { class: 'opts-hint' }, 'Colours and sizes show up here after you open it once.');
+    }
+    const box = h('div', { class: 'opts' });
+    groups.forEach((g, gi) => {
+      const row = plan.rows[gi];
+      const label = U.groupLabel(g.name);
+      const why = row.pick == null ? 'Choose the ' + label.toLowerCase() + ' RepHop should add to your cart'
+        : row.from === 'size' ? 'Filled in from your sizes. Choose another to change it for this item.'
+        : row.from === 'style' ? 'Filled in from the colour written under Edit.'
+        : row.from === 'only' ? 'The only choice this listing has' : 'Your pick for this item';
+      const sel = h('select', {
+        class: 'opt' + (row.pick == null ? ' unset' : ''), title: why, 'aria-label': label + ' for ' + U.displayTitle(it),
+        onchange: (e) => {
+          const v = e.target.value;
+          // Replace whatever decided this row before, then store the new pick under the row's own name.
+          let next = (it.options || []).filter((o, i) => i !== row.from && !(o.n && norm(o.n) === norm(g.name)));
+          if (v !== '') next = next.concat({ n: g.name, v: g.options[Number(v)].text });
+          send({ type: 'update', keys: [it.key], patch: { options: next } });
+        },
+      },
+        h('option', { value: '' }, label + '…'),
+        g.options.map((o, i) => h('option', { value: String(i) }, U.optionLabel(o.text) + (i === row.pick && row.from === 'size' ? ' (my size)' : ''))));
+      sel.value = row.pick != null ? String(row.pick) : '';
+      box.append(sel);
+    });
+    if (plan.unused.length) {
+      box.append(h('span', { class: 'badge bad', title: 'You picked this earlier, but the listing no longer offers it. Choose again above.' }, 'Not offered: ' + plan.unused.map((o) => o.v).join(', ')));
+    }
+    return box;
+  }
+
+  /**
+   * Only one add-to-cart run at a time. A run that has sat on one item for a quarter of an hour is
+   * taken to be abandoned; a live one can be stopped right from the message.
+   */
+  async function runBusy(retry) {
+    const q = data.queue;
+    if (!(q && q.active && q.auto)) return false;
+    if (Date.now() - (q.stepAt || 0) > 15 * 60000) {
+      await send({ type: 'queue', op: 'stop' });
+      return false;
+    }
+    toast('RepHop is still adding something to your cart (' + (q.i + 1) + ' of ' + q.keys.length + ').', { error: true, action: { label: 'Stop that and start this', fn: async () => {
+      await send({ type: 'queue', op: 'stop' });
+      retry();
+    } } });
+    return true;
+  }
+
+  /** Hand items to the queue in automatic mode. `owner[i]` says whose item entry i is in a group haul. */
+  async function runCart(keys, owner, what) {
+    if (await runBusy(() => runCart(keys, owner, what))) return false;
+    const r = await send({ type: 'queue', op: 'start', keys, owner, auto: true });
+    if (r && r.reason === 'no-agent') return needAgent(), false;
+    if (!r || !r.ok) return toast("Couldn't start.", { error: true }), false;
+    toast('Adding ' + what + ' to your cart at ' + agent.name + '. Watch that tab: RepHop tells you there if it needs you.');
+    return true;
+  }
+
+  /** The Add to cart button on a card. */
+  function addOne(it) {
+    const { groups, plan } = planFor(it);
+    const open = groups.filter((g, gi) => plan.rows[gi].pick == null).map((g) => U.groupLabel(g.name).toLowerCase());
+    // Better to say so here than to open the listing and stop there.
+    if (open.length) {
+      return toast('Choose the ' + open.join(' and ') + ' first, in the drop-down on this item.', { error: true, action: { label: 'Add anyway', fn: () => runCart([it.key], null, 'it') } });
+    }
+    return runCart([it.key], null, 'it');
+  }
+
+  /** Add several items, one after the other. */
   async function startCart(list) {
     const items = list.filter((it) => it.platform !== 'yupoo' && it.status === 'saved');
     const left = list.length - items.length;
-    if (!items.length) return toast(left ? 'Nothing to add: these are already in your cart or bought, or are albums with no listing.' : 'Select some items first.', { error: true });
-    const r = await send({ type: 'queue', op: 'start', keys: items.map((it) => it.key), auto: true });
-    if (r && r.reason === 'no-agent') return needAgent();
-    if (!r || !r.ok) return toast("Couldn't start.", { error: true });
-    view.selected.clear();
-    toast('Adding ' + items.length + ' to your cart at ' + agent.name + (left ? ' (' + left + ' left out: already in cart, bought, or no listing)' : '') + '. Keep an eye on that tab: RepHop asks there when it needs you.');
+    if (!items.length) return toast(left ? 'Nothing to add: these are already marked as in your cart or bought, or are albums with no listing.' : 'Select some items first.', { error: true });
+    const ok = await runCart(items.map((it) => it.key), null, items.length === 1 ? 'it' : items.length + ' items' + (left ? ' (' + left + ' left out: already in cart, bought, or no listing)' : ''));
+    if (ok) view.selected.clear();
   }
 
   async function removeKeys(keys) {
@@ -447,8 +542,7 @@
     const active = !!(q && q.active && q.keys.length);
     $('#queue-banner').hidden = !active;
     if (active) {
-      const cur = data.items[q.keys[q.i]];
-      $('#queue-text').textContent = (q.auto ? 'Adding to cart, ' : 'Going through ') + (q.i + 1) + ' of ' + q.keys.length + (cur ? ': ' + U.displayTitle(cur) : '');
+      $('#queue-text').textContent = runText(q);
       $('#queue-prev').disabled = q.i === 0;
       $('#queue-prev').hidden = !!q.auto;
       $('#queue-next').textContent = q.auto ? 'Skip ▶' : q.i + 1 >= q.keys.length ? 'Finish ✓' : 'Next ▶';
@@ -512,7 +606,7 @@
     renderChrome();
 
     // Fill in names and prices for anything that never got them (bulk imports, synced items).
-    const need = shown.filter((it) => it.platform === 'weidian' && !it.title && !it.check && !asked.has(it.key)).map((it) => it.key).slice(0, 40);
+    const need = shown.filter((it) => it.platform === 'weidian' && ((!it.title && !it.check) || !it.optsAt) && !asked.has(it.key)).map((it) => it.key).slice(0, 40);
     // Shop and English name come from a slower lookup; ask for a few of the items on screen at a time.
     const enrich = shown.filter((it) => it.platform === 'weidian' && !it.seller && !(it.check && it.check.state === 'gone') && !asked.has('e:' + it.key)).map((it) => it.key).slice(0, 6);
     if (need.length || enrich.length) {
@@ -520,6 +614,207 @@
       enrich.forEach((k) => asked.add('e:' + k));
       send({ type: 'needPreviews', keys: need, enrich });
     }
+  }
+
+  /** "Adding to cart, 2 of 5: Black hoodie (Sam)" */
+  function runText(q) {
+    const ref = Array.isArray(q.owner) ? q.owner[q.i] : null;
+    const person = ref && data.group ? (data.group.people || []).find((p) => p.id === ref.p) : null;
+    const theirs = person ? person.items.find((x) => x.uid === ref.x) : null;
+    const cur = theirs || data.items[q.keys[q.i]];
+    const name = cur ? (theirs ? theirs.title || 'item' : U.displayTitle(cur)) : '';
+    return (q.auto ? 'Adding to cart, ' : 'Going through ') + (q.i + 1) + ' of ' + q.keys.length + (name ? ': ' + name : '') + (person ? ' (' + person.name + ')' : '');
+  }
+
+  // ----------------------------------------------------------- welcome screen
+
+  function renderSetup() {
+    const cur = data.settings.agent;
+    $('#setup-agents').replaceChildren(...Object.entries(L.AGENTS).map(([k, a]) => h('button', { type: 'button', class: cur === k ? 'on' : '', 'aria-pressed': String(cur === k), onclick: () => patch({ agent: k }) }, k === 'custom' ? 'A different one…' : a.name)));
+    $('#setup-done').textContent = cur ? 'Start using RepHop' : 'Pick your agent to start';
+  }
+
+  // --------------------------------------------------------------- group haul
+
+  const gv = { mode: 'people', box: '' };
+
+  /** "Black · M": what someone wants of an item. */
+  function picksText(it) {
+    const parts = (it.options || []).map((o) => o.v);
+    if (it.size && !(it.options || []).some((o) => U.isSizeGroup(o.n, []))) parts.push('size ' + it.size);
+    if (it.style) parts.push(it.style);
+    return parts.join(' · ');
+  }
+
+  /** The part of your own list that belongs to the haul. */
+  function myHaul() {
+    const g = data.group || {};
+    const mine = g.mine == null ? '*' : g.mine;
+    if (mine === '') return [];
+    return Object.values(data.items).filter((it) => it.platform !== 'yupoo' && it.status !== 'bought' && (mine === '*' || it.folder === mine)).sort(SORTS.new);
+  }
+
+  /** Everyone in the haul, you first: [{ id, name, you, items }] with every item in the same shape. */
+  function groupPeople() {
+    const g = data.group || {};
+    const out = [];
+    const mine = myHaul().map((it) => ({ own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, qty: it.qty || 1, options: it.options || [],
+      size: U.sizeFor(it, data.settings), style: it.style || '', note: it.note || '', status: it.status, image: it.image }));
+    if (mine.length) out.push({ id: '', name: g.me ? g.me + ' (you)' : 'You', you: true, items: mine });
+    for (const p of g.people || []) out.push({ id: p.id, name: p.name, at: p.at, you: false, items: p.items || [] });
+    return out;
+  }
+
+  /** What "Share my list" can send: [[value, label, items]]. */
+  function shareScopes() {
+    const all = Object.values(data.items).filter((it) => it.platform !== 'yupoo');
+    const open = all.filter((it) => it.status !== 'bought');
+    const out = [];
+    const picked = all.filter((it) => view.selected.has(it.key));
+    if (picked.length) out.push(['sel', 'Selected in the list (' + picked.length + ')', picked]);
+    out.push(['*', 'Everything not bought yet (' + open.length + ')', open]);
+    for (const f of data.folders) {
+      const list = open.filter((it) => it.folder === f);
+      if (list.length) out.push(['f:' + f, 'Folder: ' + f + ' (' + list.length + ')', list]);
+    }
+    return out;
+  }
+
+  function shareChoice() {
+    const scopes = shareScopes();
+    return scopes.find(([v]) => v === $('#g-scope').value) || scopes[0];
+  }
+
+  /** Start a run over group items: [{ key, owner }] where owner is null for your own. */
+  function groupCart(entries, what) {
+    if (!entries.length) return toast('Nothing left to add: everything here is already marked as in the cart.', { error: true });
+    return runCart(entries.map((e) => e.key), entries.map((e) => e.owner || null), what);
+  }
+
+  function entryFor(p, it) {
+    return { key: it.key, owner: p.you ? null : { p: p.id, x: it.uid } };
+  }
+
+  function groupItem(p, it, tagged) {
+    const s = data.settings;
+    const conv = U.convert(it.price, data.rates, s.currency);
+    const picks = picksText(it);
+    const done = it.status === 'carted' || it.status === 'bought';
+    const title = it.title || ((L.PLATFORMS[it.platform] || {}).label || 'Item') + ' #' + it.id;
+    const meta = h('div', { class: 'meta' });
+    if (tagged) meta.append(h('span', { class: 'badge who' }, p.name));
+    if (it.price != null) {
+      meta.append(h('span', { class: 'price' }, U.yuan(it.price) + ((it.qty || 1) > 1 ? ' × ' + it.qty : '')));
+      if (conv != null && s.currency !== 'CNY') meta.append(h('span', {}, '≈ ' + U.money(conv * (it.qty || 1), s.currency)));
+    } else meta.append(h('span', { class: 'badge', title: 'Open the listing once and the price is filled in' }, 'No price yet' + ((it.qty || 1) > 1 ? ' · × ' + it.qty : '')));
+    if (picks) meta.append(h('span', { class: 'badge picked', title: 'What ' + (p.you ? 'you' : p.name) + ' picked' }, picks));
+    const mark = (status) => (p.you ? send({ type: 'update', keys: [it.key], patch: { status } }) : send({ type: 'group', op: 'mark', id: p.id, uid: it.uid, status }));
+    const cart = done
+      ? h('button', { type: 'button', class: 'on', title: 'Marked as in the cart. Click to unmark it (the cart itself is not changed).', onclick: () => mark('saved') }, it.status === 'bought' ? '✓ Bought' : '✓ In cart')
+      : h('button', { type: 'button', class: 'cart', title: 'Add this to your cart with ' + (p.you ? 'your' : p.name + '’s') + ' choices', onclick: () => groupCart([entryFor(p, it)], p.you ? 'it' : p.name + '’s item') }, 'Add to cart');
+    return h('li', { class: 'item g-item' },
+      !p.you && h('button', { type: 'button', class: 'x', title: 'Remove from ' + p.name + '’s list', 'aria-label': 'Remove ' + title, onclick: () => send({ type: 'group', op: 'removeItem', id: p.id, uid: it.uid }) }, '×'),
+      h('div', { class: 'main' }, thumb(it),
+        h('div', { class: 'info' },
+          h('button', { class: 'title', type: 'button', title: 'Open in ' + agent.name, onclick: (e) => openItem(it, e) }, title),
+          meta,
+          it.note ? h('div', { class: 'note' }, it.note) : null)),
+      h('div', { class: 'acts' }, h('button', { class: 'go', type: 'button', onclick: (e) => openItem(it, e) }, 'Open in ' + agent.name), cart));
+  }
+
+  /** The text behind "Copy who owes what". */
+  function groupSummary(tot, split) {
+    const cur = data.settings.currency;
+    const m = (n) => (n == null ? '?' : U.money(n, cur));
+    const approx = (yuan, conv) => U.yuan(yuan) + (cur !== 'CNY' ? ' ≈ ' + m(conv) : '');
+    const lines = ['Group haul, ' + new Date().toLocaleDateString(), 'Items: ' + approx(tot.yuan, tot.items) + ' (' + tot.count + (tot.count === 1 ? ' item' : ' items') + ')'];
+    if (tot.extra) lines.push('Shipping and fees: ' + m(tot.extra) + ', split ' + (split === 'cost' ? 'by item cost' : 'evenly'), 'Total: ' + m(tot.total));
+    lines.push('');
+    for (const r of tot.rows) lines.push(r.name + ': ' + approx(r.yuan, r.items) + (tot.extra ? ' + ' + m(r.share) + ' = ' + m(r.owes) : '') + ' (' + r.count + (r.count === 1 ? ' item' : ' items') + (r.unpriced ? ', ' + r.unpriced + ' without a price' : '') + ')');
+    if (cur !== 'CNY') lines.push('', 'Converted at today’s rate. The agent’s own rate and fees decide the final amounts.');
+    return lines.join('\n');
+  }
+
+  function renderGroup() {
+    const g = data.group || {};
+    const s = data.settings;
+    const friends = g.people || [];
+
+    $('#g-share-box').hidden = gv.box !== 'share';
+    $('#g-add-box').hidden = gv.box !== 'add';
+    if (gv.box === 'share') {
+      const scopes = shareScopes();
+      const sel = $('#g-scope');
+      if (sel !== document.activeElement) fillSelect(sel, scopes.map(([v, t]) => [v, t]), scopes.some(([v]) => v === sel.value) ? sel.value : scopes[0][0]);
+      const me = $('#g-me');
+      if (me !== document.activeElement && !me.value) me.value = g.me || '';
+      const n = (shareChoice() || [0, 0, []])[2].length;
+      const albums = Object.values(data.items).filter((it) => it.platform === 'yupoo').length;
+      $('#g-share-note').textContent = (n ? n + (n === 1 ? ' item goes' : ' items go') + ' into the code, each with the colour, size and quantity set on it.' : 'There is nothing to share yet. Save some items first.') +
+        (albums ? ' Yupoo albums without a buy link are left out.' : '');
+    }
+
+    const q = data.queue;
+    const running = !!(q && q.active && q.auto && q.keys.length);
+    $('#g-run').hidden = !running;
+    if (running) $('#g-run-text').textContent = runText(q);
+
+    $('#g-body').hidden = !friends.length;
+    $('#g-empty').hidden = !!friends.length;
+    if (!friends.length) return;
+
+    const people = groupPeople();
+    const tot = U.groupTotals(people, data.rates, s.currency, g.extra || 0, g.split);
+    const m = (n) => (n == null ? '?' : U.money(n, s.currency));
+    $('#g-sum').textContent = U.yuan(tot.yuan) + (s.currency !== 'CNY' ? ' ≈ ' + m(tot.items) : '');
+    $('#g-sum-note').textContent = tot.count + (tot.count === 1 ? ' item' : ' items') + ' · ' + people.length + (people.length === 1 ? ' person' : ' people') +
+      (tot.extra ? ' · with ' + m(tot.extra) + ' shipping and fees: ' + m(tot.total) : '') + (tot.unpriced ? ' · ' + tot.unpriced + ' without a price' : '');
+    $('#g-cur').textContent = s.currency;
+    const extra = $('#g-extra');
+    if (extra !== document.activeElement) extra.value = g.extra ? String(g.extra) : '';
+    $('#g-split').value = g.split === 'cost' ? 'cost' : 'even';
+    const mine = $('#g-mine');
+    if (mine !== document.activeElement) {
+      fillSelect(mine, [['*', 'Everything not bought yet']].concat(data.folders.map((f) => ['f:' + f, 'Folder: ' + f]), [['', 'Leave mine out']]), g.mine === '' ? '' : g.mine && g.mine !== '*' ? 'f:' + g.mine : '*');
+    }
+
+    $('#g-rows').replaceChildren(...tot.rows.map((r) => h('tr', {},
+      h('td', {}, h('b', {}, r.name), h('small', {}, r.count + (r.count === 1 ? ' item' : ' items') + (r.unpriced ? ' · ' + r.unpriced + ' no price' : ''))),
+      h('td', {}, U.yuan(r.yuan), s.currency !== 'CNY' ? h('small', {}, '≈ ' + m(r.items)) : null),
+      h('td', {}, tot.extra ? '+ ' + m(r.share) : '–'),
+      h('td', { class: 'owes' }, m(r.owes)))));
+    $('#g-rate-note').textContent = s.currency === 'CNY' ? '' : 'Converted at today’s rate (' + s.currency + '). Your agent’s own rate and fees decide the final amounts.';
+    $('#g-cart').textContent = running ? 'Adding…' : 'Add everything to cart';
+    $('#g-cart').disabled = running;
+
+    for (const b of $$('[data-gview]')) {
+      b.classList.toggle('on', b.dataset.gview === gv.mode);
+      b.setAttribute('aria-selected', String(b.dataset.gview === gv.mode));
+    }
+    const box = $('#g-people');
+    if (gv.mode === 'all') {
+      const flat = [];
+      for (const p of people) for (const it of p.items) flat.push([p, it]);
+      // The same product from several people sits together.
+      flat.sort((a, b) => a[1].key.localeCompare(b[1].key));
+      box.replaceChildren(h('ul', { class: 'items' }, flat.map(([p, it]) => groupItem(p, it, true))));
+      return;
+    }
+    box.replaceChildren(...people.map((p, i) => {
+      const r = tot.rows[i];
+      const left = p.items.filter((it) => it.status !== 'carted' && it.status !== 'bought');
+      return h('section', { class: 'g-person' },
+        h('div', { class: 'g-head' },
+          h('b', {}, p.name),
+          h('span', { class: 'hint' }, r.count + (r.count === 1 ? ' item' : ' items') + ' · ' + U.yuan(r.yuan) + (s.currency !== 'CNY' ? ' ≈ ' + m(r.items) : '')),
+          h('span', { class: 'grow' }),
+          left.length > 0 && h('button', { type: 'button', disabled: running, title: 'Add ' + (p.you ? 'your' : p.name + '’s') + ' items that are not in the cart yet', onclick: () => groupCart(left.map((it) => entryFor(p, it)), left.length + (p.you ? ' of your items' : ' of ' + p.name + '’s items')) }, 'Add ' + left.length + ' to cart'),
+          !p.you && h('button', { type: 'button', class: 'danger', title: 'Take ' + p.name + ' out of this haul', onclick: (e) => confirmClick(e.currentTarget, 'Remove ' + p.name + '? Click again', async () => {
+            const res = await send({ type: 'group', op: 'remove', id: p.id });
+            if (res && res.removed) toast('Removed ' + p.name + '’s list.', { action: { label: 'Undo', fn: () => send({ type: 'group', op: 'restore', person: res.removed }) } });
+          }) }, 'Remove')),
+        h('ul', { class: 'items' }, p.items.map((it) => groupItem(p, it, false))));
+    }));
   }
 
   // -------------------------------------------------------------- settings
@@ -626,12 +921,12 @@
 
   function editing() {
     const a = document.activeElement;
-    return !!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' && a.type !== 'search' && a.closest('.editor, #view-settings'));
+    return !!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' && a.type !== 'search' && a.closest('.editor, #view-settings, #view-setup, #g-add-box, #g-share-box'));
   }
 
   function render() {
     // Each part draws on its own, so a problem in one never leaves the other empty.
-    for (const part of [renderList, renderSettings]) {
+    for (const part of [renderList, renderSettings, renderSetup, renderGroup]) {
       try {
         part();
       } catch (e) {
@@ -666,6 +961,7 @@
       b.setAttribute('aria-current', b.dataset.view === name ? 'page' : 'false');
     }
     if (name === 'settings') renderCommands();
+    if (name === 'group') renderGroup();
     window.scrollTo(0, 0);
   }
 
@@ -735,7 +1031,7 @@
       const q = data.queue;
       // In an add-to-cart run, moving on from here means leaving the current item out.
       const result = q && q.auto && delta > 0 ? { key: q.keys[q.i], r: 'skipped' } : undefined;
-      const r = await send({ type: 'queue', op: 'step', delta, result });
+      const r = await send({ type: 'queue', op: 'step', delta, result, at: q ? q.i : undefined });
       if (r && r.finished && !r.summary) toast('That was the last one.');
     };
     $('#queue-next').addEventListener('click', () => step(1));
@@ -792,6 +1088,12 @@
         };
         return list.length > 8 ? confirmClick(btn, 'Open ' + Math.min(40, list.length) + ' tabs? Click again', go) : go();
       }
+      if (act === 'share') {
+        close();
+        gv.box = 'share';
+        show('group');
+        return;
+      }
       if (act === 'cart') {
         // With nothing ticked this would run over everything shown, so a long list asks once more.
         const go = () => {
@@ -833,6 +1135,101 @@
         $('#search').focus();
       }
     });
+
+    // ---- welcome screen
+    $('#setup-done').addEventListener('click', async () => {
+      if (!data.settings.agent) return toast('Pick your shopping agent first (step 1).', { error: true });
+      await patch({ setupDone: true });
+      if (data.settings.agent === 'custom' && !L.validTemplate(data.settings.customTemplate)) {
+        show('settings');
+        toast('Enter your agent’s link template below.');
+        $('#s-template').focus();
+      } else show('list');
+    });
+    $('#setup-skip').addEventListener('click', async () => {
+      await patch({ setupDone: true });
+      show('list');
+    });
+    $('#setup-again').addEventListener('click', () => show('setup'));
+
+    // ---- group haul
+    const openBox = (name, focus) => {
+      gv.box = gv.box === name ? '' : name;
+      renderGroup();
+      if (gv.box) $(focus).focus();
+    };
+    $('#g-share').addEventListener('click', () => openBox('share', '#g-me'));
+    $('#g-add').addEventListener('click', () => openBox('add', '#g-code'));
+    $('#g-share-close').addEventListener('click', () => openBox(gv.box));
+    $('#g-add-close').addEventListener('click', () => openBox(gv.box));
+    $('#g-scope').addEventListener('change', renderGroup);
+    const shareCode = async () => {
+      const name = $('#g-me').value.replace(/\s+/g, ' ').trim().slice(0, 30);
+      if (!name) {
+        toast('Type your name first, so whoever is ordering knows whose list this is.', { error: true });
+        $('#g-me').focus();
+        return null;
+      }
+      const chosen = shareChoice();
+      if (!chosen || !chosen[2].length) return toast('There is nothing to share yet.', { error: true }), null;
+      const mine = await send({ type: 'group', op: 'set', patch: { me: name } });
+      const obj = U.packShare(name, chosen[2], data.settings, mine && mine.sid);
+      return { name, count: obj.items.length, code: await U.encodeShare(obj) };
+    };
+    $('#g-copy').addEventListener('click', async () => {
+      const r = await shareCode();
+      if (!r) return;
+      try {
+        await navigator.clipboard.writeText(r.code);
+        toast('Share code copied (' + r.count + (r.count === 1 ? ' item' : ' items') + '). Paste it to whoever is ordering.');
+      } catch (_) {
+        toast("Couldn't copy. Use “Save as a file” instead.", { error: true });
+      }
+    });
+    $('#g-file').addEventListener('click', async () => {
+      const r = await shareCode();
+      if (r) download('rephop-haul-' + (r.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'list') + '.txt', r.code, 'text/plain;charset=utf-8');
+    });
+    const addShared = async (text) => {
+      const shared = await U.decodeShare(text);
+      if (!shared) return toast('That is not a RepHop share code. Ask your friend to press “Copy share code” again and send all of it.', { error: true });
+      if (!shared.items.length) return toast('That list is empty.', { error: true });
+      if (!shared.name) shared.name = 'Friend';
+      const r = await send({ type: 'group', op: 'add', person: shared });
+      if (!r || !r.ok) return toast(r && r.reason === 'full' ? 'A group haul holds up to 12 friends. Remove one first.' : "Couldn't add that list.", { error: true });
+      $('#g-code').value = '';
+      gv.box = '';
+      toast((r.replaced ? 'Updated ' : 'Added ') + r.name + '’s list: ' + r.count + (r.count === 1 ? ' item.' : ' items.') + (r.kept ? ' ' + r.kept + ' already in the cart ' + (r.kept === 1 ? 'stays' : 'stay') + ' marked.' : ''), r.replaced ? { action: { label: 'Undo', fn: () => send({ type: 'group', op: 'restore', person: r.replaced }) } } : null);
+      renderGroup();
+    };
+    $('#g-import').addEventListener('click', () => {
+      if (!$('#g-code').value.trim()) return toast('Paste the share code first.', { error: true });
+      addShared($('#g-code').value);
+    });
+    $('#g-open').addEventListener('click', () => $('#g-open-file').click());
+    $('#g-open-file').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      if (file.size > 2e6) return toast('That file is too big to be a share code.', { error: true });
+      addShared(await file.text());
+    });
+    $('#g-mine').addEventListener('change', (e) => send({ type: 'group', op: 'set', patch: { mine: e.target.value.replace(/^f:/, '') } }));
+    $('#g-extra').addEventListener('change', (e) => send({ type: 'group', op: 'set', patch: { extra: e.target.value } }));
+    $('#g-split').addEventListener('change', (e) => send({ type: 'group', op: 'set', patch: { split: e.target.value } }));
+    for (const b of $$('[data-gview]')) b.addEventListener('click', () => { gv.mode = b.dataset.gview; renderGroup(); });
+    $('#g-cart').addEventListener('click', (e) => {
+      const entries = [];
+      for (const p of groupPeople()) for (const it of p.items) if (it.status !== 'carted' && it.status !== 'bought') entries.push(entryFor(p, it));
+      const go = () => groupCart(entries, entries.length + ' items');
+      return entries.length > 5 ? confirmClick(e.currentTarget, 'Add all ' + entries.length + '? Click again', go) : go();
+    });
+    $('#g-summary').addEventListener('click', () => {
+      const g = data.group || {};
+      copy(groupSummary(U.groupTotals(groupPeople(), data.rates, data.settings.currency, g.extra || 0, g.split), g.split), 'who owes what');
+    });
+    $('#g-run-skip').addEventListener('click', () => step(1));
+    $('#g-run-stop').addEventListener('click', () => send({ type: 'queue', op: 'stop' }));
 
     // ---- add
     const found = () => L.extractLabeled($('#paste').value);
@@ -891,7 +1288,11 @@
       });
     }
     for (const el of $$('[data-size]')) {
-      el.addEventListener('change', () => patch({ sizes: Object.assign({}, data.settings.sizes, { [el.dataset.size]: el.value.trim().slice(0, 30) }) }));
+      el.addEventListener('change', () => {
+        const sizes = Object.assign({}, data.settings.sizes);
+        for (const x of $$('[data-size]', el.closest('.sizes'))) sizes[x.dataset.size] = x.value.trim().slice(0, 30);
+        patch({ sizes });
+      });
     }
     for (const el of $$('[data-key]')) {
       el.addEventListener('input', () => {
@@ -982,6 +1383,52 @@
     $('#wipe').addEventListener('click', (e) => confirmClick(e.currentTarget, 'Really delete all ' + Object.keys(data.items).length + ' items? Click again', () => removeKeys(Object.keys(data.items))));
   }
 
+  // ------------------------------------------------------------- self-update
+  // Chrome keeps running the copy of an unpacked extension it loaded, even after the files in its folder
+  // are replaced: the background and the page scripts stay old until the extension is reloaded. This
+  // page is the one part Chrome always reads fresh, so it is the part that notices and restarts the rest.
+
+  async function staleBuild() {
+    let disk = '';
+    try {
+      disk = (await (await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })).json()).version || '';
+    } catch (_) {
+      /* unreadable: fall back on asking the background */
+    }
+    if (disk && disk !== chrome.runtime.getManifest().version) return true;
+    // An older background does not know this question and answers nothing. Ask twice: it may just be waking up.
+    for (let i = 0; i < 2; i++) {
+      const res = await send({ type: 'version' });
+      if (res && res.build === U.BUILD) return false;
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    return true;
+  }
+
+  async function checkBuild() {
+    if (!(await staleBuild())) {
+      try {
+        localStorage.removeItem('rhRestartAt');
+      } catch (_) {
+        /* private mode */
+      }
+      return;
+    }
+    let last = 0;
+    try {
+      last = Number(localStorage.getItem('rhRestartAt')) || 0;
+      // Restart once by itself; if that did not help within two minutes, say so instead of looping.
+      if (Date.now() - last > 120000) {
+        localStorage.setItem('rhRestartAt', String(Date.now()));
+        chrome.runtime.reload();
+        return;
+      }
+    } catch (_) {
+      /* fall through to the banner */
+    }
+    $('#stale').hidden = false;
+  }
+
   // ------------------------------------------------------------------ boot
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -1004,6 +1451,10 @@
     render();
     const want = new URLSearchParams(location.search).get('view');
     if (want && $('#view-' + want)) show(want);
+    else if (!data.settings.setupDone) show('setup');
     send({ type: 'rates' });
+    $('#stale-restart').addEventListener('click', () => chrome.runtime.reload());
+    $('#build').textContent = 'RepHop ' + U.BUILD;
+    checkBuild();
   })();
 })();

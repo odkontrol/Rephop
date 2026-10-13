@@ -1,6 +1,6 @@
 # RepHop
 
-Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to a list instead of juggling tabs, then have them added to your cart.
+Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to a list instead of juggling tabs, pick each one's colour and size right in the list, and have them added to your cart. Buying as a group? Friends send their lists and one person orders for everyone.
 
 No copying, no pasting, and one tab that gets reused instead of a new tab per link.
 
@@ -9,10 +9,13 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 1. Open `chrome://extensions` (also works in Edge and Brave).
 2. Turn on **Developer mode** (top right).
 3. Click **Load unpacked** and choose this `rephop` folder.
+
 4. Pin the ⚡ icon. Clicking it opens your list in the side panel.
-5. **Pick your shopping agent.** RepHop does not assume one. The list asks at the top, and so does the first link you click.
+5. A **welcome screen** opens: pick your shopping agent (RepHop does not assume one) and, if you like, enter your sizes. Both can be changed later under Settings.
 
 Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, only shows a listing when you are logged in.
+
+**Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
 
 ## What it does
 
@@ -50,7 +53,8 @@ Only your own clicks and key presses count. The hotkeys act on a link your mouse
 - Folders, tags, notes, quantity, in-cart and bought status, search, sort and filters, and a running total.
 - **Delete quickly:** the × on a card deletes it (with Undo). **Select all**, then **Delete**, clears a folder or the whole list.
 - **Go through:** opens your items one at a time in a single tab, with Next / Previous on the page (`]` and `[`).
-- **Add to cart** (see below).
+- **Colour and size drop-downs on every card**, showing the choices the listing offers, and an **Add to cart** button next to them (see below).
+- **Group haul:** share your list as a code, or collect your friends' lists and see what everyone owes (see below).
 - Check availability: Weidian items that sold out or were removed, and Yupoo albums that were deleted.
 - QC photo lookup, trusted sellers (gold outline on their links), "seen in N posts" counter.
 - Export CSV, copy as text or Reddit markdown, JSON backup and restore.
@@ -61,24 +65,53 @@ Only your own clicks and key presses count. The hotkeys act on a link your mouse
 
 A listing there has a **Save to RepHop** button in the corner bar. So does a right-click on the page, `Alt+Shift+K`, and a strip at the top of the list. Saving with the corner button or the strip also remembers any colour or size you clicked on the listing (not the ones the site had pre-selected).
 
-## Add to cart for me
+## Colours, sizes and Add to cart
 
-Select items in the list and press **Add to cart**. RepHop opens each one at your agent in turn.
+Every card in the list shows a drop-down for each row of choices its listing offers (colour, size, style…) and an **Add to cart** button. Nothing has to be selected first.
 
-**On Superbuy and AllChinaBuy** it sets the options, presses Add To Cart once, and waits for the site to confirm before moving on. To choose, it uses in this order:
+**Where the drop-downs come from**
 
-1. What you added to your cart from that listing before, or clicked on it before saving.
+- Weidian items get theirs as soon as they are saved, straight from Weidian, in the seller's own wording. Common Chinese words are shown with a translation (`黑色 · Black`, `M码 · M`).
+- Taobao and 1688 have no public lookup, so their drop-downs appear after you have opened the listing at your agent once. From then on the wording is the agent's own.
+- Size rows fill themselves in from **your sizes** (the welcome screen, or Settings → My sizes: shoes, tops, bottoms, belts, hats). The item's type is worked out from its name and can be set by hand under **Edit**. Choose another size in the drop-down to override it for one item.
+
+**What Add to cart does**
+
+On **Superbuy and AllChinaBuy** RepHop opens the listing in the agent tab, sets every row, sets the quantity, presses Add To Cart once and waits for the site's own "Add to cart successfully!" dialog before it marks the item. To settle a row it uses, in this order:
+
+1. The pick you made for that row (in the list's drop-down, or by clicking on the listing before).
 2. The size or colour written on the item (**Edit** on its card).
-3. Your sizes under **Settings → My sizes** (shoes, tops, bottoms, belts, hats). The item's type is worked out from its name and can be set by hand.
+3. Your sizes.
 4. If a row has only one choice at all, that one.
 
-It only ever picks something it has a reason to pick. The site pre-selects a colour and size on every listing; RepHop ignores that. If a choice is sold out or not offered, or RepHop has nothing to go on for a row, it presses nothing: it tells you what is open on that listing and carries on once you have added it yourself (or skipped it). It never swaps a sold-out size for a neighbouring one. If the site says nothing after the press, RepHop asks whether it went in rather than assume. It acts only in the tab the run opened, presses Add To Cart at most once per item per run, and never presses Buy Now. Quantities above 1 are set here too (up to 20).
+It only ever picks something it has a reason to pick. The site pre-selects a colour and size on every listing; RepHop ignores that. If a choice is sold out or not offered, if a pick of yours is nowhere on the listing, or if it has nothing to go on for a row, it presses nothing: a message on the page says exactly what is open, and RepHop carries on once you have added the item yourself (or skipped it). It never swaps a sold-out size for a neighbouring one. A pick you made before only ever matches the very same choice (the same text, its translation for the common words, or the same size): if the listing now offers “Black/White” where you had picked “Black”, RepHop asks. If the site answers "Add to cart failed!", RepHop passes that on and marks nothing. If the site says nothing at all, RepHop asks whether the item went in rather than assume.
 
-**On the other agents** RepHop does not pick or press anything. It opens each listing in turn; you choose and add, and RepHop marks the item and moves on.
+Three things it will not do: tick Superbuy's "I have read and agree" box under its risk notice (if that box is unticked it waits for you), press Buy Now, or press Add To Cart twice for the same step. It acts only in the tab the run opened.
 
-At the end it reports how many it added, how many you added, and how many were skipped. Nothing is ever paid for; items only go into your cart.
+Listings RepHop leaves to you, with a message saying why: wholesale listings that take an amount per choice, listings where Superbuy shows a notes box instead of choice buttons, listings the shop has taken down, and items Superbuy refuses to sell. The quantity on the item is set exactly, or the listing is handed to you.
 
-How far to trust it: the class names it reads on Superbuy were checked against the live listing page (the rows of choices, the pre-selection, the Add To Cart button). What has not been observed is what Superbuy shows after a successful add, because nobody pressed the button on a live listing while building this. RepHop looks for the usual success message; if Superbuy words it differently you will get the "is it in your cart?" question after each press. Everything else was tested on a stand-in page built to match the live markup.
+Select several items and press **Add to cart** in the bar that appears (or More → Add these to cart) to add them one after the other. At the end RepHop reports how many it added, how many you added, and how many were skipped. Nothing is ever paid for; items only go into your cart.
+
+**On the other agents** RepHop does not pick or press anything. It opens each listing in turn and shows what you wanted; you choose and add, and RepHop marks the item and moves on.
+
+How far to trust it: the page structure RepHop relies on was taken from the code Superbuy's listing page itself runs, and then checked on a live, signed-in Superbuy listing (October 2026) using RepHop's own page-reading code and the same kind of clicks it makes: the rows and choices were read correctly, clicking a colour and a size selected them, the quantity control counted up, and pressing Add To Cart produced Superbuy's "Add to cart successfully!" dialog, which is what RepHop waits for. What was not done is a full run of the installed extension on the live site from start to finish; the automated tests do that against a stand-in page built to the same structure. AllChinaBuy shares the page but was not checked. Watch the first item go in.
+
+**Choices in the seller's wording.** A Weidian item's drop-downs show the seller's own words, often Chinese, while the agent shows a translation. RepHop finds your choice on the agent's listing by the same text, by translation for common words, or by its place in the row: the agent lists the same choices in the same order. Place is only used when the row is recognisably the same row (same number of choices, and the ones RepHop can read sit in the same places); otherwise it asks.
+
+## Group haul
+
+For when one person orders for several friends, so that international shipping is paid once.
+
+1. **Each friend** opens the **Group** tab, presses **Share my list**, types their name, chooses which items to send (everything, a folder, or what is selected in the list) and presses **Copy share code** (or **Save as a file**). They send that text to whoever is ordering, by any means.
+2. **The person ordering** presses **Add a friend's list** and pastes each code. A newer code from the same person replaces the earlier one; items already in the cart stay marked as long as they are still wanted the same way. Two friends with the same name are kept apart.
+3. The Group tab then shows:
+   - one **total** for the whole haul, in yuan and in your currency;
+   - a row **per person**: what their items cost, their share of shipping and fees, and what they **owe**;
+   - everyone's items, **by person** or **all together** (the same product from several people side by side), each with the colour, size and quantity that person chose;
+   - **Add to cart** on every item, **Add N to cart** per person, and **Add everything to cart**. A friend's item is added with that friend's choices and size, never yours.
+4. Enter the shipping and fees once they are known and choose **evenly** or **by item cost**. **Copy who owes what** gives a short text for the group chat.
+
+A share code holds each item's link, name, price, quantity, the choices made on it, the size as text and its note, plus the name you typed and a random id of your copy of RepHop (so that your next code replaces this one). RepHop sends it nowhere: it exists only where you paste it. The amounts use the day's exchange rate; your agent's own rate and fees decide the final numbers. Up to 12 friends per haul.
 
 ## Google Sheets
 
@@ -108,7 +141,8 @@ RepHop has no server, no account and no analytics. Everything it stores stays in
 
 What it stores locally:
 
-- Your list (items, folders, tags, notes, the options you picked), your sizes and your settings.
+- Your list (items, folders, tags, notes, the options you picked and the choices each listing offers), your sizes and your settings.
+- Group hauls: the lists friends sent you as share codes, and the name you typed for your own.
 - A history: which product links you opened, which Reddit posts each link appeared in (post ids only, used for the "seen in N posts" counter), and previews it has already looked up. **Settings → Clear that history** removes all of it.
 
 What a website can see: that RepHop's buttons are on its page, and which links it recognised. It cannot read which links you saved, viewed or trusted: the buttons, the hover card and the messages are drawn in closed shadow roots, and no button changes size with that state.
@@ -117,7 +151,7 @@ Network requests the extension makes itself:
 
 | To | When | Why |
 | --- | --- | --- |
-| `thor.weidian.com` | You hover, open or save a Weidian link, or check availability | Name, price, picture, stock |
+| `thor.weidian.com` | You hover, open or save a Weidian link, check availability, or add a friend's list that contains Weidian items | Name, price, picture, stock, and the choices the listing offers |
 | `weidian.com` item page | A little after you save a Weidian item, and when you open or save a `k.youshop10.com` short link. One at a time, spaced out, capped per session, and paused for 30 minutes if Weidian refuses | The shop (for trusted sellers) and Weidian's translated name; where a short link leads |
 | `*.yupoo.com` | You hover, open or save a Yupoo album | Find the buy link, title and cover |
 | `si.geilicdn.com`, `photo.yupoo.com` | A thumbnail is shown | Product pictures (small versions) |
@@ -147,7 +181,9 @@ See [PRIVACY.md](PRIVACY.md) for the same information as a standalone policy.
 
 ## Limits
 
-- **Superbuy's listing page was read, but never clicked.** The layout RepHop relies on (name, price, rows of choices, Add To Cart button) was checked against the live page. What Superbuy shows after a successful Add To Cart was not observed, so that part rests on the usual success message; when it is not recognised RepHop asks you. Opening, saving and the queue do not depend on any of this.
+- **Superbuy's listing page was read, never clicked.** What RepHop relies on there comes from the page's own code (see "How far to trust it" above). If Superbuy changes that page, Add to cart stops and tells you what it could not do; opening, saving, the drop-downs for Weidian items and the group haul do not depend on it.
+- **Drop-downs for Weidian items use the seller's wording**, which the agent shows translated. Sizes, plain English and the common colour words are matched; anything else RepHop asks you to pick on the listing once, and remembers in the agent's wording from then on.
+- **Group hauls are not live.** A friend who changes their list sends a new code. RepHop has no server to keep lists in step.
 - **Reddit was tested on saved copies**, not on the live site: a hand-built page in Reddit's structure, plus archived copies of real r/FashionReps threads (new Reddit, with Reddit's own inline stylesheet). Reddit blocks automated browsers, so the live site itself was not driven.
 - Taobao and 1688 have no public preview API. Their name, price and picture fill in after you open the listing once. Availability checks cover Weidian and Yupoo only.
 - A Yupoo album only resolves if the seller put a Weidian, Taobao or 1688 link on it.
