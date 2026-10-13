@@ -13,6 +13,12 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 4. Pin the ⚡ icon. Clicking it opens your list in the side panel.
 5. A **welcome screen** opens: pick your shopping agent (RepHop does not assume one) and, if you like, enter your sizes. Both can be changed later under Settings.
 
+
+
+https://github.com/user-attachments/assets/c18574c1-661b-4b47-8645-4e812a037886
+
+
+
 Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, only shows a listing when you are logged in.
 
 **Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
