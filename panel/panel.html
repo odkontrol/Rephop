@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RepHop</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
@@ -15,21 +16,41 @@
       <button type="button" data-view="settings">Settings</button>
       <button type="button" data-view="help">Help</button>
     </nav>
+    <button type="button" id="theme-toggle" class="icon" title="Switch to light mode" aria-label="Switch between dark and light mode">☀</button>
   </header>
 
   <main>
     <!-- ============================== LIST ============================== -->
     <section id="view-list">
+      <div id="pick-agent" class="pick" hidden>
+        <h2>Which shopping agent do you use?</h2>
+        <p>RepHop opens product links there. Pick one to get started. You can change it any time, right below.</p>
+        <div class="pick-grid" id="pick-grid"></div>
+      </div>
+
       <div class="quick">
-        <label class="switch" title="When this is on, clicking a product link on Reddit opens the listing in your agent instead of the original site.">
-          <input type="checkbox" id="q-hijack"><span class="track"></span><span id="q-hijack-label">Click a link → Superbuy</span>
+        <label class="switch" title="When this is on, clicking a product link on Reddit opens the listing at your agent instead of the original site.">
+          <input type="checkbox" id="q-hijack"><span class="track"></span><span>Click a link →</span>
         </label>
+        <select id="q-agent" aria-label="Your shopping agent"></select>
         <select id="q-mode" aria-label="Where listings open">
           <option value="reuse">One tab, reused</option>
           <option value="window">Side window</option>
           <option value="group">Tab group</option>
           <option value="new">New tab each time</option>
         </select>
+      </div>
+
+      <div id="this-tab" class="banner soft" hidden>
+        <span id="this-tab-text"></span>
+        <span class="grow"></span>
+        <button type="button" id="this-tab-save" class="primary">＋ Save to list</button>
+      </div>
+
+      <div id="cart-summary" class="banner soft" hidden>
+        <span id="cart-summary-text"></span>
+        <span class="grow"></span>
+        <button type="button" id="cart-summary-close">OK</button>
       </div>
 
       <div id="queue-banner" class="banner" hidden>
@@ -72,12 +93,13 @@
       <div class="summary">
         <div class="totals"><strong id="count"></strong><span id="total"></span></div>
         <span class="grow"></span>
-        <button type="button" id="select-all" title="Select everything shown">Select</button>
+        <button type="button" id="select-all" title="Select everything shown, then move, tag, delete or add it to your cart">Select all</button>
         <button type="button" id="start-queue" class="primary" title="Open these one at a time in a single tab, with Next/Previous buttons on the page">Go through</button>
         <details class="menu" id="more">
           <summary>More</summary>
           <div class="menu-body">
             <div class="menu-scope" id="scope"></div>
+            <button type="button" data-do="cart">Add to cart for me</button>
             <button type="button" data-do="open-all">Open all in tabs</button>
             <button type="button" data-do="check">Check availability</button>
             <hr>
@@ -95,7 +117,9 @@
         <strong id="bulk-count"></strong>
         <select id="bulk-move" aria-label="Move selected to folder"></select>
         <button type="button" id="bulk-tag">Tag</button>
-        <button type="button" id="bulk-clear">Clear</button>
+        <button type="button" id="bulk-cart" class="primary" title="Open each selected item at your agent, pick the options and press Add To Cart">Add to cart</button>
+        <button type="button" id="bulk-delete" class="danger" title="Delete the selected items">Delete</button>
+        <button type="button" id="bulk-clear" title="Clear the selection">Clear</button>
       </div>
 
       <ul id="items" class="items"></ul>
@@ -105,7 +129,7 @@
         <h2>Nothing saved yet</h2>
         <p>Open a Reddit post with Weidian, Taobao, 1688 or Yupoo links. Each link gets a small button:</p>
         <ul>
-          <li><span class="demo-pill"><b>⚡ SB</b><i>＋</i></span> Left side opens the listing in your agent. <b>＋</b> saves it here.</li>
+          <li><span class="demo-pill"><b>⚡ Open</b><i>＋</i></span> Left side opens the listing at your agent. <b>＋</b> saves it here.</li>
           <li>Or hover a link and press <kbd>S</kbd> to open or <kbd>A</kbd> to save.</li>
           <li><kbd>Alt</kbd> + click a link saves it without leaving the page.</li>
         </ul>
@@ -129,7 +153,7 @@
       <p id="paste-found" class="hint"></p>
       <hr>
       <button type="button" id="add-tab" class="wide">Save the page in the current tab</button>
-      <p class="hint">Works when the tab is a product page (Weidian, Taobao, 1688, a Yupoo album or another agent's listing).</p>
+      <p class="hint">Works when the tab is a product page: Weidian, Taobao, 1688, a Yupoo album, or a listing on one of the built-in agents.</p>
     </section>
 
     <!-- ============================ SETTINGS ============================ -->
@@ -177,6 +201,16 @@
       <label class="check"><input type="checkbox" data-setting="showFab"><span>Action bar in the corner <small>“Save all links”, queue controls and the list button.</small></span></label>
       <label class="check"><input type="checkbox" data-setting="detectTextLinks"><span>Detect links posted as plain text</span></label>
 
+      <h2>Look</h2>
+      <label class="field"><span>Theme</span>
+        <select data-setting="theme">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="system">Match my computer</option>
+        </select>
+      </label>
+      <p class="hint">This is for the list. The buttons and cards RepHop adds to web pages stay dark so they read well on any site.</p>
+
       <h2>List</h2>
       <label class="field"><span>Show prices in</span><select data-setting="currency" id="s-currency"></select></label>
       <p class="hint" id="rate-note"></p>
@@ -196,6 +230,18 @@
       <p class="hint">Their links get a gold outline on Reddit. Add a Yupoo username here, or tick “trusted” on any saved item (for Weidian items the shop is looked up a little while after you save them).</p>
       <ul class="plain" id="seller-list"></ul>
       <div class="row"><input type="text" id="seller-new" maxlength="60" placeholder="Yupoo username" aria-label="Yupoo username"><button type="button" id="seller-add">Add</button></div>
+
+      <h2>Add to cart for me</h2>
+      <p class="hint">Select items in your list and press <b>Add to cart</b>. RepHop opens each one at your agent and, on Superbuy and AllChinaBuy, sets the options and presses Add To Cart. To choose, it uses in this order: what you picked on that listing before, the size or colour written on the item (under Edit), then your sizes below. It only picks what it has a reason to pick: if a choice is sold out, missing, or RepHop simply has nothing to go on, it presses nothing and leaves that listing to you, then carries on once you have added it. On other agents it opens each listing and you do the choosing. Nothing is ever paid for: items only go into your cart.</p>
+      <h3>My sizes</h3>
+      <div class="sizes" id="sizes">
+        <label><span>Shoes</span><input type="text" data-size="shoes" maxlength="30" placeholder="43, 9.5"></label>
+        <label><span>Tops</span><input type="text" data-size="tops" maxlength="30" placeholder="L"></label>
+        <label><span>Bottoms</span><input type="text" data-size="bottoms" maxlength="30" placeholder="32, L"></label>
+        <label><span>Belts</span><input type="text" data-size="belts" maxlength="30" placeholder="110"></label>
+        <label><span>Hats</span><input type="text" data-size="hats" maxlength="30" placeholder="58, M"></label>
+      </div>
+      <p class="hint">Write sizes the way sellers do. Separate alternatives with commas (“43, 9.5”): the first one found on the listing is used. Tops covers shirts, hoodies and jackets; bottoms covers pants and shorts.</p>
 
       <h2>Sync and backup</h2>
       <label class="check"><input type="checkbox" data-setting="sync"><span>Sync my list between my computers <small>Uses your browser's own sync. Names (up to 80 characters), prices, folders, tags and notes (up to 200 characters) are synced. Longer text stays complete on the device where you wrote it. Pictures are re-downloaded.</small></span></label>
@@ -225,17 +271,17 @@
       <h2>How RepHop works</h2>
       <ol class="steps">
         <li><b>Browse Reddit as usual.</b> Every Weidian, Taobao, 1688 and Yupoo link, and every other agent's link, gets a small button next to it.</li>
-        <li><b>Click the link</b> (or the ⚡ button) and the listing opens in <span data-agent>Superbuy</span>, in one tab that is reused, so you never pile up tabs.</li>
-        <li><b>Click ＋</b> to save a find here instead. Go through them later, one at a time, with <b>Go through</b>.</li>
+        <li><b>Click the link</b> (or the ⚡ button) and the listing opens in <span data-agent>your agent</span>, in one tab that is reused, so you never pile up tabs.</li>
+        <li><b>Click ＋</b> to save a find here instead. Go through them later, one at a time, with <b>Go through</b>, or select some and press <b>Add to cart</b> to have RepHop put them in your agent's cart.</li>
       </ol>
 
       <h3>Shortcuts on the page</h3>
       <table class="cheat">
-        <tr><td><kbd>Click</kbd> a product link</td><td>Open the listing in <span data-agent>Superbuy</span></td></tr>
+        <tr><td><kbd>Click</kbd> a product link</td><td>Open the listing in <span data-agent>your agent</span></td></tr>
         <tr><td><kbd>Ctrl</kbd>+click or middle-click</td><td>Open it in a background tab</td></tr>
         <tr><td><kbd>Alt</kbd>+click</td><td>Save it to your list</td></tr>
         <tr><td><kbd>Shift</kbd>+click</td><td>Open the original link, untouched</td></tr>
-        <tr><td>Hover + <kbd data-keyname="open">S</kbd></td><td>Open in <span data-agent>Superbuy</span></td></tr>
+        <tr><td>Hover + <kbd data-keyname="open">S</kbd></td><td>Open in <span data-agent>your agent</span></td></tr>
         <tr><td>Hover + <kbd data-keyname="save">A</kbd></td><td>Save</td></tr>
         <tr><td>Hover + <kbd data-keyname="qc">Q</kbd></td><td>QC photos</td></tr>
         <tr><td>Hover + <kbd data-keyname="original">O</kbd></td><td>Original link in a new tab</td></tr>
@@ -248,11 +294,14 @@
         <li><b>Hover a link</b> (or focus it with the keyboard) to see the picture, name and price before opening anything. Weidian and Yupoo previews load directly; Taobao and 1688 have no public preview, so theirs fill in after you have opened the listing once.</li>
         <li><b>Save all links</b> in the corner bar saves every link on the page plus the comments Reddit has not put on screen yet. Reddit hands over about 500 comments at a time; on bigger threads RepHop tells you how many were left out.</li>
         <li><b>Google Sheets:</b> the corner bar can grab the links from the tab you are on or from all tabs. “Clickable view” opens a plain version of the sheet where every link gets its own buttons.</li>
+        <li><b>Already on your agent's site?</b> The bar in the corner of a listing has <b>Save to RepHop</b>; so does a right-click on the page, <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, and the strip at the top of this list. Saving there also remembers the colour and size you had picked.</li>
+        <li><b>Add to cart for me:</b> on Superbuy and AllChinaBuy, RepHop sets the options from what you chose before and from your sizes (Settings), presses Add To Cart once and waits for the site to confirm. If a choice is sold out, missing, or it has nothing to go on, it presses nothing and asks you on the page. On other agents it opens each listing in turn and marks it when you have added it yourself. Quantities above 1 are set on Superbuy and AllChinaBuy only.</li>
+        <li><b>Deleting:</b> the × on a card deletes it (with Undo). <b>Select all</b>, then <b>Delete</b>, clears a whole folder or the whole list.</li>
         <li><b>Right-click</b> any product link, a text selection or the page for the same actions on any website.</li>
         <li><b>Check availability</b> (More menu) flags Weidian items that have sold out or been removed, and Yupoo albums that were deleted. Taobao and 1688 can only be checked by opening them.</li>
         <li><b>The reused tab</b> is only reused while it still shows a listing. If you have moved on in it (cart, checkout, another site), RepHop leaves it alone and opens a fresh one.</li>
         <li><b>Stay signed in</b> to your agent: Superbuy only shows a listing when you are logged in.</li>
-        <li><b>Privacy:</b> your list and history stay in this browser. RepHop has no server and collects nothing. It contacts Weidian and Yupoo (pages and pictures) for previews, follows short links you hover, open or save, reads the Reddit thread or Google Sheet you ask it to grab, and asks a public rate service for the yuan exchange rate. Clear the history any time under Settings.</li>
+        <li><b>Privacy:</b> your list and history stay in this browser. RepHop has no server and collects nothing. It contacts Weidian and Yupoo (pages and pictures) for previews, follows short links you open or save, reads the Reddit thread or Google Sheet you ask it to grab, and asks a public rate service for the yuan exchange rate. A website can tell RepHop's buttons are on its page, but not which links you saved, viewed or trusted. Clear the history any time under Settings.</li>
       </ul>
     </section>
   </main>

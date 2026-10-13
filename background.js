@@ -148,7 +148,6 @@ async function fetchWeidian(id) {
 // saved, one at a time with a pause in between, a cap per session, and a long break after any refusal.
 
 const ENRICH_GAP_MS = 3000;
-const ENRICH_BREAK_MS = 30 * 60000;
 const ENRICH_MAX_PER_SESSION = 60;
 const enrichQueue = [];
 let enrichRunning = false;
@@ -161,8 +160,7 @@ function queueEnrich(key) {
   (async () => {
     while (enrichQueue.length) {
       const next = enrichQueue.shift();
-      const ran = await enrichOne(next).catch(() => false);
-      if (ran) await new Promise((r) => setTimeout(r, ENRICH_GAP_MS));
+      await enrichOne(next).catch(() => false);
     }
   })().finally(() => (enrichRunning = false));
 }
@@ -180,10 +178,10 @@ async function enrichOne(key) {
   await chrome.storage.session.set({ enrichCount: (st.enrichCount || 0) + 1 });
   let page;
   try {
-    page = U.parseWeidianPage((await fetchPage('https://weidian.com/item.html?itemID=' + item.id, 400000)).text);
+    page = U.parseWeidianPage((await pacedPage(ENRICH_GAP_MS, () => fetchPage('https://weidian.com/item.html?itemID=' + item.id, 400000))).text);
   } catch (_) {
-    // Refused or unreachable: stop asking for a good while rather than make it worse.
-    await chrome.storage.session.set({ enrichPausedUntil: Date.now() + ENRICH_BREAK_MS });
+    // Refused: stop asking for a good while rather than make it worse. (Simply being offline does not count.)
+    if (navigator.onLine !== false) await pausePages();
     enrichQueue.length = 0;
     return true;
   }
@@ -238,7 +236,54 @@ function yupooBuyLinks(html) {
   return out;
 }
 
+// Every request that ends up at a weidian.com page goes through pacedPage(): one at a time, spaced out,
+// and not at all for half an hour after Weidian has refused one. (Weidian cuts off clients that load
+// many item pages in a row.)
+const PAGE_BREAK_MS = 30 * 60000;
+let pageChain = Promise.resolve();
+let lastPageAt = 0;
+
+function pacedPage(gapMs, fn) {
+  const p = pageChain.then(async () => {
+    const wait = lastPageAt + gapMs - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    try {
+      return await fn();
+    } finally {
+      lastPageAt = Date.now();
+    }
+  });
+  pageChain = p.catch(() => {});
+  return p;
+}
+
+async function pagesPaused() {
+  const st = await chrome.storage.session.get('enrichPausedUntil');
+  return (st.enrichPausedUntil || 0) > Date.now();
+}
+
+function pausePages() {
+  return chrome.storage.session.set({ enrichPausedUntil: Date.now() + PAGE_BREAK_MS });
+}
+
 async function resolveShort(parsed) {
+  if (L.hostMatches(L.toUrl(parsed.url).hostname, ['youshop10.com'])) {
+    // Weidian's own shortener redirects to an item page. Only the final address is needed, so ask for
+    // headers only, wait our turn, and stay away while Weidian is refusing us.
+    if (await pagesPaused()) return { ok: false, reason: 'paused', parsed };
+    const ask = (method) => fetch(parsed.url, { method, credentials: 'omit', redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+    let res;
+    try {
+      res = await pacedPage(1500, () => ask('HEAD'));
+      if (res.status === 405 || res.status === 501) res = await pacedPage(1500, () => ask('GET'));
+    } catch (e) {
+      // A refusal starts the break. Simply being offline does not.
+      if (navigator.onLine !== false) await pausePages();
+      throw e;
+    }
+    const direct = L.parseLink(res.url);
+    return direct && direct.kind === 'item' ? { ok: true, item: direct, from: parsed } : { ok: false, reason: 'unresolved', parsed };
+  }
   const page = await fetchPage(parsed.url, 400000);
   const direct = L.parseLink(page.url);
   if (direct && direct.kind === 'item') return { ok: true, item: direct, from: parsed };
@@ -247,7 +292,7 @@ async function resolveShort(parsed) {
   return { ok: false, reason: 'unresolved', parsed };
 }
 
-async function resolveYupoo(album) {
+async function resolveYupoo(album, opts) {
   const page = await fetchPage(album.url, 700000);
   const meta = yupooMeta(page.text, album);
   const candidates = yupooBuyLinks(page.text);
@@ -255,6 +300,9 @@ async function resolveYupoo(album) {
   if (item) return { ok: true, item, from: album, meta };
   for (const c of candidates) {
     if (c.kind !== 'short') continue;
+    // The album's buy link is a short link. Following it costs a request to the shop, which a hover is not
+    // worth: show the album for now; the link is followed when the item is opened or saved.
+    if (opts && opts.hover) return { ok: true, item: album, from: album, meta, later: true };
     const r = await resolveShort(c).catch(() => null);
     if (r && r.ok) return { ok: true, item: r.item, from: album, meta };
   }
@@ -274,11 +322,11 @@ function once(key, fn) {
  *   { ok: true, item, from?, meta?, noBuyLink? }  item is a marketplace product, or the album itself when it has no buy link
  *   { ok: false, reason: 'unsupported' | 'network' | 'unresolved', parsed? }
  */
-async function resolveLink(input, force) {
+async function resolveLink(input, force, opts) {
   const parsed = typeof input === 'string' ? L.parseLink(input) : input;
   if (!parsed) return { ok: false, reason: 'unsupported' };
   if (parsed.kind === 'item') return { ok: true, item: parsed };
-  return once('resolve:' + parsed.key, async () => {
+  return once('resolve:' + (opts && opts.hover ? 'hover:' : '') + parsed.key, async () => {
     const cache = await get('resolved', {});
     const hit = cache[parsed.key];
     if (hit && !force && Date.now() - hit.at < (hit.key && !hit.noBuyLink ? 30 * DAY : DAY)) {
@@ -287,14 +335,16 @@ async function resolveLink(input, force) {
     }
     let out;
     try {
-      out = parsed.kind === 'yupoo' ? await resolveYupoo(parsed) : await resolveShort(parsed);
+      out = parsed.kind === 'yupoo' ? await resolveYupoo(parsed, opts) : await resolveShort(parsed);
     } catch (e) {
       if (parsed.kind === 'yupoo' && e && e.status === 404) {
         // The seller deleted the album.
         out = { ok: true, item: parsed, from: parsed, noBuyLink: true, gone: true, meta: { seller: { key: 'yupoo:' + parsed.user, name: parsed.user } } };
       } else return { ok: false, reason: 'network', parsed, error: String((e && e.message) || e) };
     }
-    if (out.ok) {
+    if (out.ok && out.later) {
+      if (out.meta) await savePreview(parsed.key, Object.assign({ state: 'ok' }, out.meta));
+    } else if (out.ok) {
       await mutate('resolved', {}, (map) => {
         map[parsed.key] = { key: out.item.key, meta: out.meta || null, noBuyLink: !!out.noBuyLink, gone: !!out.gone, at: Date.now() };
         prune(map, 600, 'at');
@@ -494,6 +544,8 @@ async function openLink(msg, srcTab) {
   const settings = await getSettings();
   const target = msg.key ? L.keyToItem(msg.key) : msg.url;
   if (!target) return { ok: false, reason: 'unsupported' };
+  // Nothing is opened until the user has said which agent they use.
+  if (!L.agentInfo(settings).chosen) return { ok: false, reason: 'no-agent' };
   const res = await resolveLink(target);
   const agent = L.agentInfo(settings).name;
   if (!res.ok) {
@@ -505,10 +557,10 @@ async function openLink(msg, srcTab) {
     return { ok: false, reason: res.reason };
   }
   const url = res.noBuyLink ? res.item.url : L.agentUrl(res.item, settings);
-  await openUrl(url, settings, msg.disposition, srcTab);
+  const tabId = await openUrl(url, settings, msg.disposition, srcTab);
   await markViewed([res.item.key, res.from && res.from.key]);
   if (res.item.kind === 'item') queuePreview(res.item.key);
-  return { ok: true, key: res.item.key, noBuyLink: !!res.noBuyLink, agent, focused: msg.disposition !== 'background' && msg.disposition !== 'group' && settings.focusOnOpen };
+  return { ok: true, key: res.item.key, noBuyLink: !!res.noBuyLink, agent, tabId, focused: msg.disposition !== 'background' && msg.disposition !== 'group' && settings.focusOnOpen };
 }
 
 // --------------------------------------------------------------- saved list
@@ -557,17 +609,21 @@ function upgradeAlbum(albumKey, base, meta) {
   }).then(async (done) => {
     if (!done) return false;
     queuePreview(base.key);
-    // A running queue still lists the album under its old name.
-    await mutate('queue', null, (q) => {
-      if (!q || !Array.isArray(q.keys) || !q.keys.includes(albumKey)) return SKIP;
-      const at = q.keys.indexOf(albumKey);
-      if (q.keys.includes(base.key)) {
-        q.keys.splice(at, 1);
-        if (q.i > at) q.i--;
-        q.i = Math.max(0, Math.min(q.i, q.keys.length - 1));
-      } else q.keys[at] = base.key;
-      return true;
-    });
+    await rekeyQueue(albumKey, base.key);
+    return true;
+  });
+}
+
+/** A running queue may still list an item under its old key. */
+function rekeyQueue(oldKey, newKey) {
+  return mutate('queue', null, (q) => {
+    if (!q || !Array.isArray(q.keys) || !q.keys.includes(oldKey)) return SKIP;
+    const at = q.keys.indexOf(oldKey);
+    if (q.keys.includes(newKey)) {
+      q.keys.splice(at, 1);
+      if (q.i > at) q.i--;
+      q.i = Math.max(0, Math.min(q.i, q.keys.length - 1));
+    } else q.keys[at] = newKey;
     return true;
   });
 }
@@ -588,6 +644,7 @@ async function saveEntries(entries, folder) {
 
   const stats = { ok: true, added: 0, duplicates: 0, failed: 0, noBuyLink: 0, pending: 0, keys: [], title: '' };
   const fresh = [];
+  const rekeyed = [];
   const previews = await get('previews', {});
   const folders = await get('folders', U.DEFAULT_FOLDERS);
   const dest = folder && folders.includes(folder) ? folder : folders.includes(settings.defaultFolder) ? settings.defaultFolder : folders[0] || 'Inbox';
@@ -615,7 +672,10 @@ async function saveEntries(entries, folder) {
         if (it.platform === 'yupoo' && base.platform !== 'yupoo') {
           // An album saved before its buy link was known: upgrade it in place.
           delete items[existing];
-          Object.assign(it, { key: base.key, platform: base.platform, id: base.id, url: base.url, updatedAt: now });
+          tombs[existing] = now;
+          delete tombs[base.key];
+          rekeyed.push([existing, base.key]);
+          Object.assign(it, { key: base.key, platform: base.platform, id: base.id, url: base.url, pending: false, updatedAt: now });
           if (!it.aliases.includes(existing)) it.aliases.push(existing);
           items[it.key] = it;
         }
@@ -643,6 +703,12 @@ async function saveEntries(entries, folder) {
         stats.pending++;
         it.pending = true;
       } else if (it.pending) it.pending = false;
+      // Options the user had picked on the agent's page when they pressed Save there.
+      const picked = U.cleanOptions(e.options);
+      if (picked.length) {
+        it.options = picked;
+        it.updatedAt = now;
+      }
       applyMeta(it, r.meta);
       applyPreview(it, previews[it.key]);
       for (const a of it.aliases) applyPreview(it, previews[a]);
@@ -652,6 +718,7 @@ async function saveEntries(entries, folder) {
     return stats.keys.length ? true : SKIP;
   });
 
+  for (const [from, to] of rekeyed) await rekeyQueue(from, to);
   for (const k of fresh.slice(0, 60)) queuePreview(k);
   for (const k of fresh.slice(0, 12)) queueEnrich(k);
   if ((entries || []).length > MAX_BULK) stats.truncated = (entries || []).length - MAX_BULK;
@@ -659,7 +726,7 @@ async function saveEntries(entries, folder) {
   return stats;
 }
 
-const EDITABLE = ['customTitle', 'label', 'note', 'tags', 'folder', 'status', 'qty', 'price'];
+const EDITABLE = ['customTitle', 'label', 'note', 'tags', 'folder', 'status', 'qty', 'price', 'kind', 'size', 'style', 'options'];
 
 function updateItems(keys, patch) {
   return mutateItems((items) => {
@@ -678,13 +745,23 @@ function updateItems(keys, patch) {
           it.priceEdited = v != null;
         }
         if (f === 'status' && !U.STATUSES[v]) continue;
-        if (typeof v === 'string') v = v.slice(0, f === 'note' ? 2000 : 200);
-        it[f] = v;
+        if (f === 'kind' && v && !U.KINDS[v] && v !== 'other') continue;
+        if (f === 'options') v = U.cleanOptions(v);
+        if (typeof v === 'string') v = v.trim().slice(0, f === 'note' ? 2000 : f === 'size' || f === 'style' ? 40 : 200);
+        if ((f === 'kind' || f === 'size' || f === 'style') && !v) delete it[f];
+        else if (f === 'options' && !v.length) delete it.options;
+        else it[f] = v;
       }
       if (patch.addTags) it.tags = U.normalizeTags((it.tags || []).concat(patch.addTags));
       // Text typed on this device is complete again, whatever sync delivered earlier.
-      if ('note' in patch && it.cut) it.cut &= ~U.CUT_NOTE;
-      if (('customTitle' in patch || 'label' in patch) && it.cut) it.cut &= ~U.CUT_NAME;
+      if ('note' in patch) {
+        if (it.cut) it.cut &= ~U.CUT_NOTE;
+        delete it.cutNote;
+      }
+      if ('customTitle' in patch || 'label' in patch) {
+        if (it.cut) it.cut &= ~U.CUT_NAME;
+        delete it.cutName;
+      }
       if (!it.cut) delete it.cut;
       it.updatedAt = Date.now();
       n++;
@@ -732,6 +809,13 @@ function sanitizeItem(raw) {
   if (raw.priceEdited === true && it.price != null) it.priceEdited = true;
   if (raw.pending === true && it.platform === 'yupoo') it.pending = true;
   if (raw.cut === 1 || raw.cut === 2 || raw.cut === 3) it.cut = raw.cut;
+  if (it.cut && typeof raw.cutName === 'string') it.cutName = raw.cutName.slice(0, 12);
+  if (it.cut && typeof raw.cutNote === 'string') it.cutNote = raw.cutNote.slice(0, 12);
+  if (typeof raw.kind === 'string' && (U.KINDS[raw.kind] || raw.kind === 'other')) it.kind = raw.kind;
+  if (typeof raw.size === 'string' && raw.size.trim()) it.size = raw.size.trim().slice(0, 40);
+  if (typeof raw.style === 'string' && raw.style.trim()) it.style = raw.style.trim().slice(0, 40);
+  const options = U.cleanOptions(raw.options);
+  if (options.length) it.options = options;
   return it;
 }
 
@@ -745,6 +829,9 @@ function restoreItems(list, preferIncoming) {
       const cur = items[it.key];
       if (cur && !(preferIncoming && it.updatedAt > (cur.updatedAt || 0))) continue;
       for (const s of it.sources) s.addedAt = it.addedAt;
+      // If this item was deleted here before, other devices have heard about that deletion (or will).
+      // Stamping the restore as "now" makes it the newer event everywhere.
+      if (tombs[it.key]) it.updatedAt = Date.now();
       items[it.key] = it;
       delete tombs[it.key];
       n++;
@@ -850,7 +937,12 @@ function recordSeen(entries) {
 async function describe(msg) {
   const target = msg.key ? L.keyToItem(msg.key) : L.parseLink(msg.url);
   if (!target) return { ok: false, reason: 'unsupported' };
-  const res = await resolveLink(target);
+  if (target.kind === 'short') {
+    // Following a short link costs a request to the shop's site, and a hover is not worth one.
+    const known = (await get('resolved', {}))[target.key];
+    if (!known || !known.key) return { ok: false, reason: 'short', kind: 'short' };
+  }
+  const res = await resolveLink(target, false, { hover: true });
   if (!res.ok) return { ok: false, reason: res.reason, kind: target.kind };
   const key = res.item.key;
   const [preview, info, items] = await Promise.all([getPreview(key), lookup([key, target.key]), get('items', {})]);
@@ -867,31 +959,64 @@ async function describe(msg) {
 
 // -------------------------------------------------------------------- queue
 
+/**
+ * "Go through" and "Add to cart for me" share one queue: a list of item keys walked in a single tab.
+ * With `auto` set, the page script chooses the options and presses Add To Cart where it can, and reports
+ * how each item went in `results` (added / manual / skipped). The queue records which tab it runs in and
+ * when the current step began, so only the page loaded for that step, in that tab, acts on it; and it
+ * records each Add To Cart press, so no item is pressed twice in a run. When the queue ends, the report
+ * is kept as `cartRun` for the panel to show.
+ */
 async function queueOp(msg, srcTab) {
-  const settings = await getSettings();
   let q = await get('queue', null);
+  const store = () => locked(() => chrome.storage.local.set({ queue: q }));
+  const finish = async (extra) => {
+    const summary = q && q.auto !== undefined && q.results && Object.keys(q.results).length ? { at: Date.now(), total: q.keys.length, results: q.results } : null;
+    await locked(() => chrome.storage.local.set(Object.assign({ queue: { keys: [], i: 0, active: false } }, summary ? { cartRun: summary } : {})));
+    return Object.assign({ ok: true }, extra, summary ? { summary } : {});
+  };
   if (msg.op === 'start') {
+    if (!L.agentInfo(await getSettings()).chosen) return { ok: false, reason: 'no-agent' };
     const keys = (msg.keys || []).filter((k) => L.keyToItem(k));
     if (!keys.length) return { ok: false, reason: 'empty' };
-    q = { keys, i: 0, active: true };
+    q = { keys, i: 0, active: true, auto: !!msg.auto, results: {}, pressed: {} };
   } else if (!q || !q.active) {
     return { ok: false, reason: 'no-queue' };
-  } else if (msg.op === 'stop') {
-    await locked(() => chrome.storage.local.set({ queue: { keys: [], i: 0, active: false } }));
-    return { ok: true, stopped: true };
-  } else if (msg.op === 'step') {
-    const next = q.i + (msg.delta || 1);
-    if (next < 0) return { ok: true, edge: 'start', queue: q };
-    if (next >= q.keys.length) {
-      await locked(() => chrome.storage.local.set({ queue: { keys: [], i: 0, active: false } }));
-      return { ok: true, finished: true };
+  } else {
+    if (msg.op === 'press') {
+      // The page asks before pressing Add To Cart. It is told yes once per item, and only for the current one.
+      const key = String(msg.key || '');
+      q.pressed = q.pressed || {};
+      if (q.keys[q.i] !== key || q.pressed[key]) return { ok: true, first: false };
+      q.pressed[key] = Date.now();
+      await store();
+      return { ok: true, first: true };
     }
-    q.i = next;
-  } else if (msg.op === 'goto') {
-    q.i = Math.max(0, Math.min(q.keys.length - 1, msg.i | 0));
+    if (msg.result && typeof msg.result.key === 'string' && ['added', 'manual', 'skipped'].includes(msg.result.r)) {
+      q.results = q.results || {};
+      q.results[msg.result.key] = msg.result.r;
+    }
+    if (msg.op === 'stop') return finish({ stopped: true });
+    if (msg.op === 'step') {
+      const next = q.i + (msg.delta || 1);
+      if (next < 0) return { ok: true, edge: 'start', queue: q };
+      if (next >= q.keys.length) return finish({ finished: true });
+      q.i = next;
+    } else if (msg.op === 'goto') q.i = Math.max(0, Math.min(q.keys.length - 1, msg.i | 0));
   }
-  await locked(() => chrome.storage.local.set({ queue: q }));
+  // Stamp the step before the tab is pointed at the listing: only a page loaded after this moment acts on it.
+  q.stepAt = Date.now();
+  delete q.tabId;
+  await store();
   const r = await openLink({ key: q.keys[q.i], disposition: 'reuse' }, srcTab);
+  if (r.ok && r.tabId != null) {
+    const now = await get('queue', null);
+    if (now && now.active && now.stepAt === q.stepAt) {
+      q = now;
+      q.tabId = r.tabId;
+      await store();
+    }
+  }
   return { ok: r.ok, queue: q, reason: r.reason };
 }
 
@@ -969,8 +1094,18 @@ async function syncPush(force) {
   try {
     let all = await syncPull();
     const data = await chrome.storage.local.get(['items', 'tombstones', 'sellers']);
+    // Sellers travel in a single value, so they are packed newest-first (ties by key, so every device
+    // agrees on the order) until that value is comfortably full.
     const sellers = {};
-    for (const [k, v] of Object.entries(data.sellers || {}).slice(0, 80)) sellers[k] = { n: v.name || '', t: v.trusted ? 1 : 0, m: v.m || 0 };
+    let sellerBytes = 2;
+    const ranked = Object.entries(data.sellers || {}).sort((a, b) => (b[1].m || 0) - (a[1].m || 0) || (a[0] < b[0] ? -1 : 1));
+    for (const [k, v] of ranked) {
+      const entry = { n: String(v.name || '').slice(0, 40), t: v.trusted ? 1 : 0, m: v.m || 0 };
+      const size = U.storedSize({ [k]: entry });
+      if (sellerBytes + size > 6000) break;
+      sellers[k] = entry;
+      sellerBytes += size;
+    }
     const remoteSellers = all.rh_sellers || {};
     const sellersNewer = Object.entries(sellers).some(([k, v]) => !remoteSellers[k] || (remoteSellers[k].m || 0) < v.m);
 
@@ -1025,6 +1160,7 @@ async function toast(tabId, text, kind) {
 }
 
 const describeSave = U.describeSave;
+const NO_AGENT_TEXT = 'Pick your shopping agent first: click the RepHop icon and choose it at the top of the list.';
 
 async function buildMenus() {
   const agent = L.agentInfo(await getSettings()).name;
@@ -1036,6 +1172,7 @@ async function buildMenus() {
   chrome.contextMenus.create({ id: 'rh-save', title: 'Save to RepHop list', contexts: ['link'], targetUrlPatterns: patterns });
   chrome.contextMenus.create({ id: 'rh-qc', title: 'Find QC photos', contexts: ['link'], targetUrlPatterns: patterns });
   chrome.contextMenus.create({ id: 'rh-selection', title: 'Save links in selection to RepHop', contexts: ['selection'] });
+  chrome.contextMenus.create({ id: 'rh-savepage', title: 'Save this product to RepHop list', contexts: ['page'], documentUrlPatterns: patterns });
   chrome.contextMenus.create({ id: 'rh-page', title: 'Grab every rep link on this page', contexts: ['page', 'action'] });
 }
 
@@ -1116,7 +1253,7 @@ function setupPanel() {
 
 const handlers = {
   open: (m, s) => openLink(m, s.tab),
-  save: (m) => saveEntries([{ url: m.url, key: m.key, ctx: m.ctx, label: m.label }], m.folder).then((st) => Object.assign(st, { ok: st.keys.length > 0, key: st.keys[0], message: describeSave(st) })),
+  save: (m) => saveEntries([{ url: m.url, key: m.key, ctx: m.ctx, label: m.label, options: m.options }], m.folder).then((st) => Object.assign(st, { ok: st.keys.length > 0, key: st.keys[0], message: describeSave(st) })),
   saveMany: (m) => saveEntries(m.entries, m.folder).then((st) => Object.assign(st, { message: describeSave(st) })),
   describe: (m) => describe(m),
   lookup: (m) => lookup(m.keys),
@@ -1158,17 +1295,19 @@ const handlers = {
     return { ok: true, settings: next };
   },
   queue: (m, s) => queueOp(m, s.tab),
+  whoami: (m, s) => ({ tabId: s.tab ? s.tab.id : null }),
   refresh: async (m) => {
     // Weidian items are asked directly; Yupoo albums are re-read (a deleted album answers 404).
     // Taobao and 1688 have no public lookup, so those are reported as skipped.
-    const all = (m.keys || []).slice(0, 400);
+    // The panel sends these in batches of 100, so nothing is silently left out.
+    const all = (m.keys || []).slice(0, 100);
     const keys = all.filter((k) => k.startsWith('weidian:') || k.startsWith('yupoo:'));
     const res = await pool(keys, 2, async (k) => {
       if (k.startsWith('weidian:')) return getPreview(k, true).catch(() => null);
       const r = await resolveLink(L.keyToItem(k), true).catch(() => null);
       return !r || !r.ok ? null : { state: r.gone ? 'gone' : 'ok' };
     });
-    const out = { ok: true, checked: keys.length, skipped: (m.keys || []).length - keys.length, live: 0, soldout: 0, gone: 0, unknown: 0 };
+    const out = { ok: true, checked: keys.length, skipped: all.length - keys.length, live: 0, soldout: 0, gone: 0, unknown: 0 };
     for (const p of res) {
       if (!p || p.stale) out.unknown++;
       else if (p.state === 'gone') out.gone++;
@@ -1177,13 +1316,21 @@ const handlers = {
     }
     return out;
   },
+  /** What "add to cart for me" should choose for one saved item. */
+  cartPlan: async (m) => {
+    const data = await chrome.storage.local.get(['items', 'settings']);
+    const items = data.items || {};
+    const it = items[findKey(items, m.key)];
+    if (!it) return { ok: false };
+    const settings = U.mergeSettings(data.settings);
+    return { ok: true, itemKey: it.key, options: it.options || [], size: U.sizeFor(it, settings), style: it.style || '', qty: it.qty || 1, kind: U.guessKind(it) };
+  },
   pagePatch: async (m) => {
     if (!L.keyToItem(m.key)) return { ok: false };
     const p = { state: 'ok' };
     if (typeof m.title === 'string' && m.title.trim()) p.title = m.title.trim().slice(0, 200);
     if (typeof m.price === 'number' && m.price > 0) p.price = m.price;
     if (typeof m.image === 'string' && /^https:\/\//.test(m.image)) p.image = m.image.slice(0, 500);
-    if (m.seller && typeof m.seller.name === 'string' && m.seller.name.trim()) p.seller = { key: 'shop:' + m.seller.name.trim().toLowerCase().slice(0, 60), name: m.seller.name.trim().slice(0, 60) };
     await savePreview(m.key, p);
     await markViewed([m.key]);
     return { ok: true };
@@ -1263,7 +1410,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   setupPanel();
   chrome.alarms.create('rh-rates', { periodInMinutes: 720 });
   ensureRates();
-  if (details.reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('panel/panel.html?view=help') });
+  if (details.reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('panel/panel.html') });
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -1291,7 +1438,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const ctx = tab ? { site: U.hostOf(tab.url), postTitle: tab.title || '', postUrl: info.pageUrl || tab.url || '' } : null;
   if (info.menuItemId === 'rh-open') {
     const r = await openLink({ url: info.linkUrl }, tab);
-    if (!r.ok) toast(tab && tab.id, "That link isn't a product RepHop can read.", 'error');
+    if (!r.ok) toast(tab && tab.id, r.reason === 'no-agent' ? NO_AGENT_TEXT : "That link isn't a product RepHop can read.", 'error');
   } else if (info.menuItemId === 'rh-save') {
     const st = await saveEntries([{ url: info.linkUrl, ctx, label: info.selectionText || '' }]);
     toast(tab && tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');
@@ -1304,6 +1451,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const entries = L.extractLabeled(info.selectionText || '').map((h) => ({ url: h.raw, label: h.label, ctx }));
     const st = entries.length ? await saveEntries(entries) : { added: 0, duplicates: 0, failed: 1, keys: [] };
     toast(tab && tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');
+  } else if (info.menuItemId === 'rh-savepage' && tab) {
+    const url = tab.url || info.pageUrl || '';
+    const st = L.parseLink(url) ? await saveEntries([{ url, ctx }]) : { keys: [] };
+    toast(tab.id, st.keys.length ? describeSave(st) : "This page isn't a product RepHop can read.", st.keys.length ? 'ok' : 'error');
   } else if (info.menuItemId === 'rh-page' && tab) {
     grabTab(tab);
   }
@@ -1323,7 +1474,8 @@ chrome.commands.onCommand.addListener(async (command, tabArg) => {
   }
   if (command === 'send-current') {
     const r = await openLink({ url: tab.url, disposition: 'reuse' }, tab);
-    if (r.ok && r.noBuyLink) toast(tab.id, 'This album has no Weidian or Taobao link on it.', 'error');
+    if (!r.ok && r.reason === 'no-agent') toast(tab.id, NO_AGENT_TEXT, 'error');
+    else if (r.ok && r.noBuyLink) toast(tab.id, 'This album has no Weidian or Taobao link on it.', 'error');
   } else if (command === 'save-current') {
     const st = await saveEntries([{ url: tab.url, ctx: { site: U.hostOf(tab.url), postTitle: tab.title || '', postUrl: tab.url } }]);
     toast(tab.id, describeSave(st), st.keys.length ? 'ok' : 'error');

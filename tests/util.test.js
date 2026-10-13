@@ -8,6 +8,10 @@ function item(key, extra) {
 }
 
 test('settings merge keeps defaults for anything missing', () => {
+  assert.equal(U.mergeSettings().agent, '', 'no agent out of the box');
+  assert.equal(U.mergeSettings().theme, 'dark', 'dark out of the box');
+  assert.equal(U.mergeSettings({ theme: 'neon' }).theme, 'dark');
+  assert.deepEqual(U.mergeSettings({ sizes: { shoes: '43' } }).sizes, { shoes: '43', tops: '', bottoms: '', belts: '', hats: '' });
   const s = U.mergeSettings({ agent: 'cnfans', keys: { open: 'x' } });
   assert.equal(s.agent, 'cnfans');
   assert.equal(s.keys.open, 'x');
@@ -60,7 +64,7 @@ test('CSV escapes quotes, commas and spreadsheet formulas', () => {
   assert.equal(U.csvCell('say "hi"'), '"say ""hi"""');
   assert.equal(U.csvCell('=HYPERLINK("http://evil")'), '"\'=HYPERLINK(""http://evil"")"');
   assert.equal(U.csvCell(null), '');
-  const csv = U.toCsv([item('weidian:7237185689', { label: 'Tee, black', price: 100, tags: ['a', 'b'] })], U.mergeSettings(), { rates: { USD: 0.15 } });
+  const csv = U.toCsv([item('weidian:7237185689', { label: 'Tee, black', price: 100, tags: ['a', 'b'] })], U.mergeSettings({ agent: 'superbuy' }), { rates: { USD: 0.15 } });
   const lines = csv.replace(/^﻿/, '').split('\r\n');
   assert.equal(lines.length, 2);
   assert.ok(lines[0].startsWith('Title,Price (CNY),Price (USD)'));
@@ -69,7 +73,8 @@ test('CSV escapes quotes, commas and spreadsheet formulas', () => {
 
 test('text and markdown export', () => {
   const list = [item('weidian:7237185689', { label: 'Tee [v2]', price: 100 })];
-  const s = U.mergeSettings();
+  const s = U.mergeSettings({ agent: 'superbuy' });
+  assert.equal(U.toText(list, 'links', U.mergeSettings()), 'https://weidian.com/item.html?itemID=7237185689', 'with no agent chosen, the plain product link is exported');
   assert.equal(U.toText(list, 'links', s), L.agentUrl(list[0], s));
   assert.equal(U.toText(list, 'markdown', s), '- [Tee \\[v2\\]](' + L.agentUrl(list[0], s) + ') — ¥100');
   assert.ok(U.toText(list, 'text', s).startsWith('Tee [v2] — ¥100\n'));
@@ -102,7 +107,9 @@ function chromeCharge(key, value) {
   const json = JSON.stringify(value);
   let escaped = 0;
   for (const ch of json) if (ch === '<' || ch.charCodeAt(0) === 0x2028 || ch.charCodeAt(0) === 0x2029) escaped += 5;
-  return Buffer.byteLength(json, 'utf8') + escaped + key.length;
+  // Whole numbers beyond 32 bits (millisecond timestamps) are written as doubles: measured at 5 extra bytes each.
+  const doubles = (json.match(/[:\[,]\d{10,}(?=[,}\]])/g) || []).length * 5;
+  return Buffer.byteLength(json, 'utf8') + escaped + doubles + key.length;
 }
 
 function assertFitsSync(packed, why) {
@@ -124,6 +131,7 @@ test('sync: packing respects the per-value and total size limits', () => {
   const packed = U.packSync(items, { 'weidian:1234567890': 99999 });
   assert.ok(packed.chunks.length > 1);
   assert.ok(packed.chunks.every(Array.isArray), 'chunks are stored as arrays, not pre-stringified text');
+  for (const c of packed.chunks) assert.ok(U.storedSize(c) + 6 >= chromeCharge('rh_i00', c), 'the estimate is never below the real charge');
   assertFitsSync(packed, 'plain list');
   assert.ok(packed.dropped > 0, 'oldest items are dropped when the list is too big');
   const entries = U.unpackSync(packed.chunks);
@@ -290,4 +298,110 @@ test('Weidian item page: a deleted item, and pages that are not item pages', () 
 test('displayTitle prefers the translated listing name over the original one', () => {
   assert.equal(U.displayTitle(item('weidian:7237185689', { title: '短袖', titleEn: 'Short sleeve tee' })), 'Short sleeve tee');
   assert.equal(U.displayTitle(item('weidian:7237185689', { title: '短袖', titleEn: 'Short sleeve tee', label: 'From Reddit' })), 'From Reddit');
+});
+
+test('sync: an edit made to a shortened name on another device is taken, not mistaken for the old text', () => {
+  const longName = 'Very long name '.repeat(10); // 150 characters
+  const original = item('weidian:7500000002', { customTitle: longName, updatedAt: 10 });
+  const sent = JSON.parse(JSON.stringify(U.compactItem(original)));
+  assert.equal(sent.hn, U.textHash(longName), 'the shortened copy carries a fingerprint of the full text');
+
+  const deviceB = {};
+  U.mergeSync(deviceB, {}, [sent]);
+  const onB = deviceB['weidian:7500000002'];
+  assert.equal(onB.cutName, sent.hn, 'B keeps the fingerprint with its shortened copy');
+
+  // B changes only the folder: the fingerprint comes back unchanged, so A keeps its full name.
+  onB.folder = 'Maybe';
+  onB.updatedAt = 20;
+  const deviceA = { 'weidian:7500000002': original };
+  U.mergeSync(deviceA, {}, [JSON.parse(JSON.stringify(U.compactItem(onB)))]);
+  assert.equal(deviceA['weidian:7500000002'].customTitle, longName);
+
+  // B types more onto the end of the name. The first 80 characters are the same as before, but the
+  // fingerprint is not, so A takes B's (newer) name instead of silently keeping its own.
+  onB.customTitle = onB.customTitle + ' plus words typed on the second device';
+  delete onB.cut;
+  delete onB.cutName;
+  onB.updatedAt = 30;
+  const edited = JSON.parse(JSON.stringify(U.compactItem(onB)));
+  assert.notEqual(edited.hn, sent.hn);
+  U.mergeSync(deviceA, {}, [edited]);
+  assert.equal(deviceA['weidian:7500000002'].customTitle, edited.l);
+  assert.equal(deviceA['weidian:7500000002'].cut, U.CUT_NAME, 'and A now knows its copy is the shortened one');
+});
+
+test('sync: size, colour, type and remembered options travel with the item', () => {
+  const it = item('weidian:7500000003', { kind: 'shoes', size: '43', style: 'black', options: [{ n: 'Color', v: 'Black' }, { n: 'Size', v: '43' }], updatedAt: 5 });
+  const back = U.expandItem(JSON.parse(JSON.stringify(U.compactItem(it))));
+  assert.equal(back.kind, 'shoes');
+  assert.equal(back.size, '43');
+  assert.equal(back.style, 'black');
+  assert.deepEqual(back.options, it.options);
+});
+
+test('add to cart: sizes are matched as whole sizes, never as part of another', () => {
+  const o = (text, disabled) => ({ text, disabled: !!disabled });
+  assert.equal(U.pickOption([o('S'), o('M'), o('L'), o('XL'), o('XXL')], 'L'), 2);
+  assert.equal(U.pickOption([o('S'), o('M'), o('L'), o('XL')], 'XL'), 3);
+  assert.equal(U.pickOption([o('S码'), o('M码'), o('L码 (175/92A)'), o('XL码')], 'L'), 2);
+  assert.equal(U.pickOption([o('42'), o('42.5'), o('43'), o('43.5'), o('143')], '43'), 2);
+  assert.equal(U.pickOption([o('42'), o('42.5'), o('43.5')], '43'), -1, 'no near misses');
+  assert.equal(U.pickOption([o('EU 42 / US 8.5'), o('EU 43 / US 9.5')], '44, 9.5'), 1, 'alternatives are tried in order');
+  assert.equal(U.pickOption([o('L', true), o('XL')], 'L'), -1, 'a sold-out size is not picked');
+  assert.equal(U.pickOption([o('30'), o('32'), o('34')], ''), -1);
+  assert.equal(U.sizeMatches('2XL', 'XL'), false);
+  assert.equal(U.sizeMatches('Size L', 'l'), true);
+});
+
+test('add to cart: remembered colours are matched by their wording', () => {
+  const o = (text) => ({ text });
+  assert.equal(U.pickOption([o('Black'), o('Black/White'), o('White')], 'black', true), 0, 'the exact one wins over a longer one that contains it');
+  assert.equal(U.pickOption([o('黑色 Black'), o('白色 White')], 'black', true), 0);
+  assert.equal(U.pickOption([o('Black/White'), o('Black/Red')], 'black', true), -1, 'two candidates means RepHop does not guess');
+  assert.equal(U.pickOption([o('Grey'), o('Navy')], 'black', true), -1);
+  // a remembered choice is matched as a whole, never as part of a neighbour
+  assert.equal(U.pickOption([o('S'), o('M'), o('XL')], 'L', true), -1, '"L" is not inside "XL"');
+  assert.equal(U.pickOption([o('41'), o('42.5')], '42', true), -1, '"42" is not "42.5"');
+  assert.equal(U.pickOption([o('XXL')], 'L', false), -1);
+  assert.equal(U.pickOption([o('M is suitable for 100-130 kg'), o('L suitable for 130-145 kg')], 'L suitable for 130-145 kg', true), 1);
+  assert.equal(U.pickOption([o('Black'), o('Jet Black')], 'jet black', true), 1);
+});
+
+test('add to cart: the kind of item decides which of your sizes is used', () => {
+  const sizes = { shoes: '43, 9.5', tops: 'L', bottoms: '32', belts: '110', hats: '' };
+  const s = U.mergeSettings({ sizes });
+  assert.equal(U.guessKind({ label: 'Jordan 4 Black Cat' }), 'shoes');
+  assert.equal(U.guessKind({ label: 'Essentials hoodie' }), 'tops');
+  assert.equal(U.guessKind({ title: '男士牛仔裤' }), 'bottoms');
+  assert.equal(U.guessKind({ label: 'LV belt' }), 'belts');
+  assert.equal(U.guessKind({ label: 'Mystery thing' }), '');
+  assert.equal(U.guessKind({ titleEn: 'Triangle logo short sleeve tee' }), 'tops', 'a short-sleeve tee is not a pair of shorts');
+  assert.equal(U.guessKind({ label: 'Nike shorts' }), 'bottoms');
+  assert.equal(U.guessKind({ label: 'Black hoodie', titleEn: 'cargo pants set' }), 'tops', 'the words from Reddit outrank the listing name');
+  assert.equal(U.guessKind({ label: 'Stussy cap' }), 'hats');
+  assert.equal(U.guessKind({ label: 'Top quality cargo pants' }), 'bottoms', '"top" as praise does not make it a top');
+  // a garment word outranks a sneaker model name
+  assert.equal(U.guessKind({ label: 'Jordan 4 hoodie' }), 'tops');
+  assert.equal(U.guessKind({ label: 'Air Max tee' }), 'tops');
+  assert.equal(U.guessKind({ label: 'Dunk shorts' }), 'bottoms');
+  assert.equal(U.guessKind({ label: 'Campus cargo pants' }), 'bottoms');
+  assert.equal(U.guessKind({ label: 'Dunk Low Panda' }), 'shoes');
+  assert.equal(U.guessKind({ label: 'Jordan 4', kind: 'tops' }), 'tops', 'your own choice of type wins');
+  assert.equal(U.guessKind({ label: 'Jordan 4', kind: 'other' }), '');
+  assert.equal(U.sizeFor({ label: 'Jordan 4' }, s), '43, 9.5');
+  assert.equal(U.sizeFor({ label: 'Cargo pants' }, s), '32');
+  assert.equal(U.sizeFor({ label: 'Jordan 4', size: '44' }, s), '44', 'a size written on the item wins');
+  assert.equal(U.sizeFor({ label: 'Bucket hat' }, s), '');
+  assert.equal(U.isSizeGroup('Size', []), true);
+  assert.equal(U.isSizeGroup('尺码', []), true);
+  assert.equal(U.isSizeGroup('Color', [{ text: 'S' }, { text: 'M' }]), false);
+  assert.equal(U.isSizeGroup('', [{ text: 'S' }, { text: 'M' }, { text: 'L' }]), true);
+  assert.equal(U.isSizeGroup('', [{ text: 'Black' }, { text: 'White' }]), false);
+});
+
+test('remembered options are cleaned before they are stored', () => {
+  assert.deepEqual(U.cleanOptions([{ n: ' Color: ', v: '  Black  ' }, { n: 'Size', v: '' }, null, { v: 5 }, { n: 'Size', v: 'L' }]), [{ n: 'Color:', v: 'Black' }, { n: 'Size', v: 'L' }]);
+  assert.deepEqual(U.cleanOptions('nope'), []);
+  assert.equal(U.cleanOptions(Array.from({ length: 20 }, (_, i) => ({ n: 'g' + i, v: 'v' }))).length, 8);
 });

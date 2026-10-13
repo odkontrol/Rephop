@@ -1,5 +1,24 @@
+/* Dark is the default look. Light is opt-in (the sun button, or Settings). */
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
+  --bg: #12151c;
+  --surface: #1b1f29;
+  --surface-2: #262b38;
+  --line: #2f3545;
+  --text: #f1f3f7;
+  --muted: #9aa3b5;
+  --accent: #ff6b35;
+  --accent-2: #f43f5e;
+  --accent-ink: #ffffff;
+  --good: #4ade80;
+  --bad: #f87171;
+  --gold: #facc15;
+  --price: #ffb86b;
+  --focus: #7dd3fc;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f6f7f9;
   --surface: #ffffff;
   --surface-2: #eef0f4;
@@ -8,31 +27,12 @@
   --muted: #626b7c;
   --accent: #f4511e;
   --accent-2: #f43f5e;
-  --accent-ink: #ffffff;
   --good: #15803d;
   --bad: #b91c1c;
   --gold: #a16207;
   --price: #c2410c;
   --focus: #2563eb;
   --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .06);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #12151c;
-    --surface: #1b1f29;
-    --surface-2: #262b38;
-    --line: #2f3545;
-    --text: #f1f3f7;
-    --muted: #9aa3b5;
-    --accent: #ff6b35;
-    --accent-2: #f43f5e;
-    --good: #4ade80;
-    --bad: #f87171;
-    --gold: #facc15;
-    --price: #ffb86b;
-    --focus: #7dd3fc;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
-  }
 }
 
 * { box-sizing: border-box; }
@@ -200,3 +200,36 @@ select { max-width: 100%; min-width: 0; }
 .toast.error { background: #7f1d1d; }
 .toast span { overflow-wrap: anywhere; }
 .toast button { border: 0; background: none; color: #7dd3fc; font-weight: 600; padding: 0; }
+
+/* ------------------------------------------------------- round 3 additions */
+.top .icon { border: 0; background: none; padding: 4px 6px; font-size: 15px; line-height: 1; color: var(--muted); }
+.top .icon:hover { color: var(--text); background: var(--surface-2); }
+.tabs { margin-left: auto; }
+
+.quick { flex-wrap: wrap; row-gap: 6px; }
+.quick select { margin-left: 0; max-width: none; flex: 1 1 150px; min-width: 0; }
+.quick #q-agent.unset { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+
+.pick { margin: 0 0 10px; padding: 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--accent); }
+.pick h2 { margin: 0 0 4px; font-size: 14px; }
+.pick p { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; }
+.pick-grid button { font-weight: 600; padding: 8px; }
+.pick-grid button:hover { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: var(--accent-ink); border-color: transparent; }
+
+.banner.soft { border-color: var(--line); font-weight: 500; }
+.banner.soft span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banner.soft button { flex: none; white-space: nowrap; }
+#cart-summary span { white-space: normal; }
+
+.item { position: relative; }
+.item .x { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); font: 400 18px/22px system-ui, sans-serif; text-align: center; }
+.item .x:hover { background: var(--surface-2); color: var(--bad); }
+.item .info { padding-right: 22px; }
+
+.bulk { flex-wrap: wrap; }
+.bulk select { flex: 1 1 110px; }
+.bulk button { flex: none; white-space: nowrap; }
+
+.sizes { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 6px 0; }
+.sizes label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--muted); }

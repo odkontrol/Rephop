@@ -101,6 +101,7 @@ test('short links are flagged for a network hop', () => {
   assert.equal(s.url, 'https://k.youshop10.com/Ab-cD=1?a=b');
   assert.equal(L.parseLink('https://m.tb.cn/h.5abc?tk=xyz').kind, 'short');
   assert.equal(L.parseLink('https://qr.1688.com/s/abc').kind, 'short');
+  assert.equal(L.parseLink('https://pandabuy.page.link/abc'), null, 'a dead shortener RepHop cannot follow is not offered');
 });
 
 test('ordinary links are left alone', () => {
@@ -121,7 +122,11 @@ test('agentUrl builds the Superbuy listing link', () => {
     L.agentUrl(item, { agent: 'superbuy' }),
     'https://www.superbuy.com/en/page/buy/?nTag=Home-search&from=search-input&url=https%3A%2F%2Fweidian.com%2Fitem.html%3FitemID%3D7237185689'
   );
-  assert.equal(L.agentUrl(item, {}), L.agentUrl(item, { agent: 'superbuy' }), 'Superbuy is the default');
+  assert.equal(L.agentUrl(item, {}), null, 'no agent is assumed until the user picks one');
+  assert.equal(L.agentInfo({}).chosen, false);
+  assert.equal(L.agentInfo({}).name, 'your agent');
+  assert.equal(L.agentInfo({ agent: 'superbuy' }).chosen, true);
+  assert.equal(L.agentInfo({ agent: 'nonsense' }).chosen, false);
   assert.equal(L.agentUrl(item, { agent: 'cnfans' }), 'https://cnfans.com/product?id=7237185689&platform=WEIDIAN');
   assert.equal(L.agentUrl(item, { agent: 'hoobuy' }), 'https://hoobuy.com/product/2/7237185689');
   assert.equal(L.agentUrl(item, { agent: 'acbuy' }), 'https://www.acbuy.com/product?id=7237185689&source=WD');
@@ -141,7 +146,9 @@ test('every built-in agent link round-trips back to the same product', () => {
 test('custom agent template, with a safe fallback', () => {
   const item = L.parseLink('https://weidian.com/item.html?itemID=7237185689');
   assert.equal(L.agentUrl(item, { agent: 'custom', customTemplate: 'https://x.test/p?u={url}&i={id}&p={platform}' }), 'https://x.test/p?u=https%3A%2F%2Fweidian.com%2Fitem.html%3FitemID%3D7237185689&i=7237185689&p=weidian');
-  assert.match(L.agentUrl(item, { agent: 'custom', customTemplate: 'javascript:alert({url})' }), /^https:\/\/www\.superbuy\.com\//);
+  assert.equal(L.agentUrl(item, { agent: 'custom', customTemplate: 'javascript:alert({url})' }), null, 'a bad template opens nothing');
+  assert.equal(L.agentInfo({ agent: 'custom', customTemplate: '' }).chosen, false);
+  assert.equal(L.agentInfo({ agent: 'custom', customName: 'MyBuy', customTemplate: 'https://x.test/p?u={url}' }).name, 'MyBuy');
   assert.equal(L.validTemplate('http://x.test/?u={url}'), false);
   assert.equal(L.validTemplate('https://x.test/nothing'), false);
 });

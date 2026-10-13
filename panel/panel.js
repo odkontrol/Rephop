@@ -24,8 +24,9 @@
     return el;
   }
 
-  const KEYS = ['items', 'settings', 'folders', 'sellers', 'seen', 'rates', 'queue', 'syncState'];
-  const data = { items: {}, settings: U.mergeSettings(), folders: U.DEFAULT_FOLDERS.slice(), sellers: {}, seen: {}, rates: null, queue: null, syncState: null };
+  const KEYS = ['items', 'settings', 'folders', 'sellers', 'seen', 'rates', 'queue', 'syncState', 'cartRun'];
+  const data = { items: {}, settings: U.mergeSettings(), folders: U.DEFAULT_FOLDERS.slice(), sellers: {}, seen: {}, rates: null, queue: null, syncState: null, cartRun: null };
+  let thisTab = null; // the product on the browser tab beside the panel, if there is one
   const view = { name: 'list', folder: '*', status: '', tag: '', seller: '', q: '', sort: 'new', selected: new Set(), openKey: null, limit: 120 };
   const asked = new Set();
   let agent = L.agentInfo(data.settings);
@@ -44,6 +45,37 @@
       else data[k] = v || null;
     }
     agent = L.agentInfo(data.settings);
+    applyTheme();
+  }
+
+  /** Dark unless the user chose light (or asked to follow the computer). */
+  function applyTheme() {
+    const want = data.settings.theme;
+    const dark = want === 'system' ? !window.matchMedia('(prefers-color-scheme: light)').matches : want !== 'light';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    try {
+      localStorage.setItem('rhTheme', dark ? 'dark' : 'light'); // read by theme.js before the next draw
+    } catch (_) {
+      /* private mode */
+    }
+    const b = $('#theme-toggle');
+    if (!b) return;
+    b.textContent = dark ? '☀' : '☾';
+    b.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+
+  /** Something needs an agent and none is chosen: point at the chooser. */
+  function needAgent() {
+    if (data.settings.agent === 'custom') {
+      // "Custom" is chosen but has no link template yet.
+      show('settings');
+      toast('Finish setting up your agent: enter its link template here.', { error: true });
+      $('#s-template').focus();
+      return;
+    }
+    show('list');
+    toast('Pick your shopping agent first.', { error: true });
+    $('#q-agent').focus();
   }
 
   // ---------------------------------------------------------------- toasts
@@ -59,7 +91,7 @@
     if (opts && opts.action) {
       el.append(h('button', { type: 'button', onclick: () => { close(); opts.action.fn(); } }, opts.action.label));
     }
-    while (box.children.length >= 2) box.firstChild.remove();
+    while (box.children.length >= 4) box.firstChild.remove();
     box.append(el);
     timer = setTimeout(close, opts && opts.action ? 7000 : 3600);
   }
@@ -153,6 +185,7 @@
   function openItem(it, ev) {
     const background = ev && (ev.ctrlKey || ev.metaKey || ev.button === 1);
     send({ type: 'open', key: it.key, disposition: background ? 'background' : 'default' }).then((r) => {
+      if (r && r.reason === 'no-agent') return needAgent();
       if (!r || !r.ok) toast("Couldn't open that item.", { error: true });
       else if (r.noBuyLink) toast('This album has no buy link, so the album itself was opened.');
     });
@@ -205,6 +238,8 @@
     if (state === 'gone') meta.append(h('span', { class: 'badge bad', title: 'Weidian no longer lists this item' }, 'Removed?'));
     if (it.seller) meta.append(h('span', { class: 'badge' + (trusted(it) ? ' gold' : ''), title: trusted(it) ? 'Trusted seller' : 'Seller' }, (trusted(it) ? '★ ' : '') + sellerName(it.seller)));
     if (seen > 1) meta.append(h('span', { class: 'badge gold', title: 'You have seen this link in ' + seen + ' different posts' }, '×' + seen + ' posts'));
+    const chosen = (it.options || []).map((o) => o.v).concat((it.options || []).length ? [] : [it.style, it.size].filter(Boolean));
+    if (chosen.length) meta.append(h('span', { class: 'badge', title: (it.options || []).length ? 'What you picked on the listing. When RepHop adds this to your cart it looks for the same; if that is sold out or gone, it asks you.' : 'What RepHop will look for when it adds this to your cart' }, chosen.join(' · ')));
 
     const info = h('div', { class: 'info' },
       h('button', { class: 'title', type: 'button', title: 'Open in ' + agent.name, onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) }, U.displayTitle(it)),
@@ -228,6 +263,7 @@
       h('button', { type: 'button', title: 'Edit, tag, move or delete', 'aria-expanded': String(isOpen), onclick: () => { view.openKey = isOpen ? null : it.key; render(); } }, isOpen ? 'Close' : 'Edit'));
 
     const li = h('li', { class: 'item' + (it.viewedAt ? ' viewed' : '') + (inQueue ? ' current' : '') },
+      h('button', { type: 'button', class: 'x', title: 'Delete from your list (you can undo)', 'aria-label': 'Delete ' + U.displayTitle(it), onclick: () => removeKeys([it.key]) }, '×'),
       h('div', { class: 'main' },
         h('input', { type: 'checkbox', class: 'pick', checked: view.selected.has(it.key), 'aria-label': 'Select ' + U.displayTitle(it),
           onchange: (e) => { e.target.checked ? view.selected.add(it.key) : view.selected.delete(it.key); renderChrome(); } }),
@@ -246,17 +282,34 @@
     const statusSel = h('select', { onchange: (e) => save({ status: e.target.value }) }, Object.entries(U.STATUSES).map(([v, t]) => h('option', { value: v }, t)));
     statusSel.value = it.status || 'saved';
 
+    const guess = U.guessKind(Object.assign({}, it, { kind: '' }));
+    const short = (k) => U.KINDS[k].split(' (')[0];
+    const kindSel = h('select', { onchange: (e) => save({ kind: e.target.value }) },
+      h('option', { value: '' }, guess ? 'Work it out (' + short(guess).toLowerCase() + ')' : 'Work it out'),
+      Object.keys(U.KINDS).map((k) => h('option', { value: k }, short(k))),
+      h('option', { value: 'other' }, 'Something else'));
+    kindSel.value = it.kind || '';
+    const mine = U.sizeFor(Object.assign({}, it, { size: '' }), data.settings);
+
     const box = h('div', { class: 'editor' },
       field('Name', h('input', { type: 'text', value: U.displayTitle(it), maxLength: 200, onchange: (e) => save({ customTitle: e.target.value.trim() }) }), true),
       field('Price (¥)', h('input', { type: 'number', min: '0', step: '0.01', value: it.price == null ? '' : String(it.price), onchange: (e) => save({ price: e.target.value }) })),
       field('Quantity', h('input', { type: 'number', min: '1', max: '99', step: '1', value: String(it.qty || 1), onchange: (e) => save({ qty: e.target.value }) })),
       field('Folder', folderSel),
       field('Status', statusSel),
+      field('Type (decides which of your sizes is used)', kindSel),
+      field('Size for this item', h('input', { type: 'text', value: it.size || '', maxLength: 40, placeholder: mine ? 'My sizes: ' + mine : 'e.g. 43 or L', onchange: (e) => save({ size: e.target.value }) })),
+      field('Colour or style to pick', h('input', { type: 'text', value: it.style || '', maxLength: 40, placeholder: 'e.g. black', onchange: (e) => save({ style: e.target.value }) }), true),
       field('Tags (comma separated)', h('input', { type: 'text', value: (it.tags || []).join(', '), placeholder: 'shoes, size 43', onchange: (e) => save({ tags: e.target.value }) }), true),
       field('Note', h('textarea', { rows: 2, value: it.note || '', maxLength: 2000, placeholder: 'Size, colour, batch…', onchange: (e) => save({ note: e.target.value }) }), true));
 
     const listed = [it.titleEn, it.title].filter((t) => t && t !== U.displayTitle(it));
     if (listed.length) box.append(h('div', { class: 'full orig' }, 'Listing name: ' + listed.join(' · ')));
+    if ((it.options || []).length) {
+      box.append(h('div', { class: 'full line' },
+        h('span', { class: 'orig' }, 'Picked on the listing: ' + it.options.map((o) => (o.n ? o.n + ' ' : '') + o.v).join(' · ')),
+        h('button', { type: 'button', title: 'Forget these, so RepHop chooses from your sizes instead', onclick: () => save({ options: [] }) }, 'Forget')));
+    }
     if (it.seller) {
       box.append(h('label', { class: 'full line check' },
         h('input', { type: 'checkbox', checked: trusted(it), onchange: (e) => send({ type: 'seller', key: it.seller.key, name: sellerName(it.seller), trusted: e.target.checked }) }),
@@ -295,6 +348,46 @@
       h('span', { class: 'grow' }),
       h('button', { type: 'button', class: 'danger', onclick: () => removeKeys([it.key]) }, 'Delete')));
     return box;
+  }
+
+  function savedKeyFor(key) {
+    if (data.items[key]) return key;
+    for (const it of Object.values(data.items)) if ((it.aliases || []).includes(key)) return it.key;
+    return null;
+  }
+
+  /** The strip that offers to save whatever product page is open in the tab beside the panel. */
+  function renderThisTab() {
+    const box = $('#this-tab');
+    box.hidden = !thisTab;
+    if (!thisTab) return;
+    const saved = savedKeyFor(thisTab.key);
+    $('#this-tab-text').textContent = saved ? 'This tab is in your list ✓' : 'On this tab: ' + (thisTab.title || 'a product page');
+    $('#this-tab-save').hidden = !!saved;
+  }
+
+  async function refreshThisTab() {
+    let tab = null;
+    try {
+      [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    } catch (_) {
+      /* no window */
+    }
+    const parsed = tab && tab.url ? L.parseLink(tab.url) : null;
+    thisTab = parsed && parsed.kind !== 'short' ? { id: tab.id, url: tab.url, title: (tab.title || '').slice(0, 80), key: parsed.key } : null;
+    renderThisTab();
+  }
+
+  /** "Add to cart for me": hand the items to the queue in automatic mode. */
+  async function startCart(list) {
+    const items = list.filter((it) => it.platform !== 'yupoo' && it.status === 'saved');
+    const left = list.length - items.length;
+    if (!items.length) return toast(left ? 'Nothing to add: these are already in your cart or bought, or are albums with no listing.' : 'Select some items first.', { error: true });
+    const r = await send({ type: 'queue', op: 'start', keys: items.map((it) => it.key), auto: true });
+    if (r && r.reason === 'no-agent') return needAgent();
+    if (!r || !r.ok) return toast("Couldn't start.", { error: true });
+    view.selected.clear();
+    toast('Adding ' + items.length + ' to your cart at ' + agent.name + (left ? ' (' + left + ' left out: already in cart, bought, or no listing)' : '') + '. Keep an eye on that tab: RepHop asks there when it needs you.');
   }
 
   async function removeKeys(keys) {
@@ -340,7 +433,7 @@
     }
     $('#scope').textContent = 'Applies to: ' + sc.label.toLowerCase();
     $('#start-queue').disabled = !sc.list.length;
-    $('#select-all').textContent = view.selected.size ? 'Select none' : 'Select';
+    $('#select-all').textContent = view.selected.size ? 'Select none' : 'Select all';
     $('#select-all').disabled = !vis.length;
 
     const picked = vis.filter((it) => view.selected.has(it.key)).length;
@@ -355,17 +448,32 @@
     $('#queue-banner').hidden = !active;
     if (active) {
       const cur = data.items[q.keys[q.i]];
-      $('#queue-text').textContent = 'Going through ' + (q.i + 1) + ' of ' + q.keys.length + (cur ? ': ' + U.displayTitle(cur) : '');
+      $('#queue-text').textContent = (q.auto ? 'Adding to cart, ' : 'Going through ') + (q.i + 1) + ' of ' + q.keys.length + (cur ? ': ' + U.displayTitle(cur) : '');
       $('#queue-prev').disabled = q.i === 0;
-      $('#queue-next').textContent = q.i + 1 >= q.keys.length ? 'Finish ✓' : 'Next ▶';
+      $('#queue-prev').hidden = !!q.auto;
+      $('#queue-next').textContent = q.auto ? 'Skip ▶' : q.i + 1 >= q.keys.length ? 'Finish ✓' : 'Next ▶';
+      $('#queue-stop').textContent = q.auto ? 'Stop' : 'End';
     }
   }
 
   function renderList() {
     const s = data.settings;
     $('#q-hijack').checked = s.clickHijack;
-    $('#q-hijack-label').textContent = 'Click a link → ' + agent.name;
+    const agentSel = $('#q-agent');
+    if (agentSel !== document.activeElement) {
+      fillSelect(agentSel, Object.entries(L.AGENTS).map(([k, a]) => [k, k === 'custom' ? 'Custom…' : a.name]), s.agent, 'your agent…');
+      agentSel.classList.toggle('unset', !s.agent);
+    }
+    $('#pick-agent').hidden = !!s.agent;
     $('#q-mode').value = s.openMode;
+    renderThisTab();
+    const run = data.cartRun;
+    $('#cart-summary').hidden = !run;
+    if (run) {
+      const r = Object.values(run.results || {});
+      const n = (what) => r.filter((x) => x === what).length;
+      $('#cart-summary-text').textContent = 'Add to cart finished: ' + n('added') + ' added for you' + (n('manual') ? ', ' + n('manual') + ' added by you' : '') + (n('skipped') ? ', ' + n('skipped') + ' skipped' : '') + (run.total > r.length ? ', ' + (run.total - r.length) + ' not reached' : '') + '.';
+    }
     $('#sort').value = view.sort;
     $('#f-status').value = view.status;
 
@@ -423,7 +531,8 @@
 
   function renderSettings() {
     const s = data.settings;
-    fillSelect($('#s-agent'), Object.entries(L.AGENTS).map(([k, a]) => [k, a.name]), s.agent);
+    fillSelect($('#s-agent'), Object.entries(L.AGENTS).map(([k, a]) => [k, a.name]), s.agent, 'Choose your agent…');
+    for (const el of $$('[data-size]')) if (el !== document.activeElement) el.value = s.sizes[el.dataset.size] || '';
     fillSelect($('#s-qc'), Object.entries(L.QC_PROVIDERS).map(([k, a]) => [k, a.name]), s.qcProvider);
     const codes = Object.keys((data.rates && data.rates.rates) || U.FALLBACK_RATES).sort();
     const top = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CNY'].filter((c) => codes.includes(c) || c === 'CNY');
@@ -571,6 +680,32 @@
     for (const b of $$('[data-goto]')) b.addEventListener('click', () => show(b.dataset.goto));
 
     $('#q-hijack').addEventListener('change', (e) => patch({ clickHijack: e.target.checked }));
+    const pickAgent = async (id) => {
+      await patch({ agent: id });
+      if (id === 'custom') {
+        show('settings');
+        toast('Enter your agent’s link template below.');
+      }
+    };
+    $('#q-agent').addEventListener('change', (e) => pickAgent(e.target.value));
+    $('#pick-grid').replaceChildren(
+      ...Object.entries(L.AGENTS).filter(([k]) => k !== 'custom').map(([k, a]) => h('button', { type: 'button', onclick: () => pickAgent(k) }, a.name)),
+      h('button', { type: 'button', onclick: () => pickAgent('custom') }, 'A different one…'));
+    $('#theme-toggle').addEventListener('click', () => patch({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }));
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
+    $('#cart-summary-close').addEventListener('click', () => chrome.storage.local.remove('cartRun'));
+    $('#this-tab-save').addEventListener('click', async () => {
+      if (!thisTab) return;
+      // Ask the page itself to save (it also knows which colour and size are picked there); fall back to the plain address.
+      const viaPage = await chrome.tabs.sendMessage(thisTab.id, { type: 'saveThis' }).catch(() => null);
+      if (viaPage && viaPage.handled) return;
+      const r = await send({ type: 'save', url: thisTab.url, ctx: { site: U.hostOf(thisTab.url), postTitle: thisTab.title, postUrl: thisTab.url } });
+      toast(r ? r.message : 'Something went wrong.', { error: !r || !r.ok });
+    });
+    chrome.tabs.onActivated.addListener(refreshThisTab);
+    chrome.tabs.onUpdated.addListener((id, info) => (info.url || info.status === 'complete') && refreshThisTab());
+    if (chrome.windows && chrome.windows.onFocusChanged) chrome.windows.onFocusChanged.addListener(refreshThisTab);
+    refreshThisTab();
     $('#q-mode').addEventListener('change', (e) => patch({ openMode: e.target.value }));
     $('#search').addEventListener('input', (e) => { view.q = e.target.value; view.limit = 120; renderList(); });
     $('#sort').addEventListener('change', (e) => { view.sort = e.target.value; try { localStorage.setItem('rhSort', view.sort); } catch (_) { /* private mode */ } renderList(); });
@@ -592,12 +727,16 @@
     $('#start-queue').addEventListener('click', async () => {
       const keys = scope().list.map((it) => it.key);
       const r = await send({ type: 'queue', op: 'start', keys });
+      if (r && r.reason === 'no-agent') return needAgent();
       if (!r || !r.ok) toast("Couldn't start. Is the list empty?", { error: true });
       else toast('Going through ' + keys.length + ' items. Use Next on the page or here.');
     });
     const step = async (delta) => {
-      const r = await send({ type: 'queue', op: 'step', delta });
-      if (r && r.finished) toast('That was the last one.');
+      const q = data.queue;
+      // In an add-to-cart run, moving on from here means leaving the current item out.
+      const result = q && q.auto && delta > 0 ? { key: q.keys[q.i], r: 'skipped' } : undefined;
+      const r = await send({ type: 'queue', op: 'step', delta, result });
+      if (r && r.finished && !r.summary) toast('That was the last one.');
     };
     $('#queue-next').addEventListener('click', () => step(1));
     $('#queue-prev').addEventListener('click', () => step(-1));
@@ -627,6 +766,14 @@
       input.focus();
     });
     $('#bulk-clear').addEventListener('click', () => { view.selected.clear(); renderList(); });
+    $('#bulk-cart').addEventListener('click', () => startCart(scope().list));
+    $('#bulk-delete').addEventListener('click', (e) => {
+      const keys = visible().filter((it) => view.selected.has(it.key)).map((it) => it.key);
+      if (!keys.length) return;
+      // A handful goes straight away (Undo is offered); a big batch asks once more first.
+      if (keys.length <= 5) return removeKeys(keys);
+      confirmClick(e.currentTarget, 'Delete ' + keys.length + '? Click again', () => removeKeys(keys));
+    });
 
     $('#more').addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-do]');
@@ -645,11 +792,25 @@
         };
         return list.length > 8 ? confirmClick(btn, 'Open ' + Math.min(40, list.length) + ' tabs? Click again', go) : go();
       }
+      if (act === 'cart') {
+        // With nothing ticked this would run over everything shown, so a long list asks once more.
+        const go = () => {
+          close();
+          startCart(list);
+        };
+        return !view.selected.size && list.length > 5 ? confirmClick(btn, 'Add all ' + list.length + ' shown? Click again', go) : go();
+      }
       close();
       if (act === 'check') {
-        toast('Checking ' + list.length + ' items…');
-        const r = await send({ type: 'refresh', keys: list.map((it) => it.key) });
-        if (!r) return;
+        // Sent in batches, so a long list is checked in full and the count below is honest.
+        const r = { checked: 0, skipped: 0, live: 0, soldout: 0, gone: 0, unknown: 0 };
+        const batches = U.chunkArray(list.map((it) => it.key), 100);
+        for (let i = 0; i < batches.length; i++) {
+          toast('Checking ' + Math.min((i + 1) * 100, list.length) + ' of ' + list.length + '…');
+          const part = await send({ type: 'refresh', keys: batches[i] });
+          if (!part) return toast('Checking stopped. Try again.', { error: true });
+          for (const k of Object.keys(r)) r[k] += part[k] || 0;
+        }
         const parts = [r.live + ' available'];
         if (r.soldout) parts.push(r.soldout + ' sold out');
         if (r.gone) parts.push(r.gone + ' removed');
@@ -728,6 +889,9 @@
         }
         patch({ [key]: value });
       });
+    }
+    for (const el of $$('[data-size]')) {
+      el.addEventListener('change', () => patch({ sizes: Object.assign({}, data.settings.sizes, { [el.dataset.size]: el.value.trim().slice(0, 30) }) }));
     }
     for (const el of $$('[data-key]')) {
       el.addEventListener('input', () => {
