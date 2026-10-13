@@ -1,3 +1,7 @@
+
+
+
+
 # RepHop
 
 Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to a list instead of juggling tabs, pick each one's colour and size right in the list, and have them added to your cart. Buying as a group? Friends send their lists and one person orders for everyone.
@@ -15,7 +19,14 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 
 Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, only shows a listing when you are logged in.
 
-**Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
+
+
+https://github.com/user-attachments/assets/1eeaec90-efa6-49d2-9d76-41551fb1ed3a
+
+
+
+**Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the 
+reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
 
 ## What it does
 
@@ -60,6 +71,12 @@ Only your own clicks and key presses count. The hotkeys act on a link your mouse
 - Export CSV, copy as text or Reddit markdown, JSON backup and restore.
 - Optional sync between your computers through the browser's own sync.
 - Dark by default; the sun button in the corner switches to light.
+
+
+
+https://github.com/user-attachments/assets/1eeb8571-758f-4990-882e-a525ac564415
+
+
 
 **Already on your agent's site?**
 
