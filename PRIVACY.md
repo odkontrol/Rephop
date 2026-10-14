@@ -2,9 +2,13 @@
 
 RepHop is a browser extension that opens product links at a shopping agent, keeps a list of the ones you save, and can add them to your cart at that agent.
 
+Last updated: 14 October 2026.
+
 ## What is collected
 
-Nothing is collected by the developer. RepHop has no account, no analytics and no advertising. No data leaves your browser except the requests listed below, which go directly from your browser to the site named, and, if you start or join one, a live group haul (see below).
+RepHop has no account, no analytics and no advertising, and the developer receives nothing about you from ordinary use. No data leaves your browser except the requests listed below, which go directly from your browser to the site named.
+
+The one exception is a live group haul, and only if you start or join one: the lists in it pass through a relay server run by whoever published your copy of RepHop. They are encrypted in your browser first, so the relay's operator cannot read them; what the relay does see is described under "Live group hauls" below.
 
 ## What is stored in your browser
 
@@ -13,7 +17,7 @@ Nothing is collected by the developer. RepHop has no account, no analytics and n
 - Group hauls: the lists your friends sent you as share codes (their name as they typed it, their items and the choices they made), and the name you typed for yourself.
 - A history used for the markers on the page: which product links you opened, which Reddit posts a link appeared in (post ids only), and previews already looked up.
 
-You can clear the history, or delete the whole list, under **Settings → Privacy and clean-up**. Removing the extension removes everything.
+You can clear the history, or delete the whole list, under **Settings → Privacy and clean-up**. Removing the extension removes everything stored in your browser. (A live haul's encrypted copy on the relay goes when the haul ends, or after 30 days untouched.)
 
 If you turn on **Sync**, a shortened copy of your list is stored in your browser account's own extension sync storage (provided by the browser vendor) so your other computers can read it. RepHop's developer has no access to it. Your sizes and other settings are not synced.
 
@@ -45,7 +49,7 @@ A live haul is optional. If you start one or join one, RepHop sends data through
 
 - **What is sent.** When you ask to join: your name. Once the person ordering lets you in: the items you chose to share (link, name, price, quantity, the choices you made, your size for them, your note), kept up to date while you stay in the haul. If you are the person ordering: to each member, which of their items are in the cart and what they owe.
 - **Who can read it.** The people in the haul, as far as it concerns them: your list goes to the person ordering only, and their note to you goes to you only. Everything is encrypted in your browser with a key that travels only inside the invite. The relay stores and forwards it without being able to read it.
-- **What the relay can see.** The haul's room id, how many people are in it, when something changed, the size of what was sent, and the IP addresses that connect to it, as any server can. The relay RepHop ships with keeps no logs of requests.
+- **What the relay can see.** The haul's room id, how many people are in it, when something changed, the size of what was sent, and the IP addresses that connect to it, as any server can. The relay's own code writes no logs; Cloudflare, which hosts it, keeps its own usage statistics, such as how many requests it served.
 - **How long it is kept.** The relay keeps the latest encrypted copy of each list and note so that people who were offline catch up. Leaving a haul deletes yours; ending the haul deletes all of it; a haul nobody has touched for 30 days is deleted automatically.
 - **The invite is the key.** Anyone who has it can ask to join. Nobody is in until the person ordering lets them in.
 
@@ -53,6 +57,6 @@ A live haul is optional. If you start one or join one, RepHop sends data through
 
 A website can tell that RepHop's buttons are on its page and which links RepHop recognised. It cannot read which links you saved, viewed or marked as trusted: RepHop's buttons, hover card and messages are drawn in closed shadow roots.
 
-## Changes
+## Changes and questions
 
-Changes to this policy are published in this file.
+Changes to this policy are published in this file. Questions: open an issue at https://github.com/odkontrol/Rephop/issues.
