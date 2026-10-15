@@ -133,11 +133,15 @@ ${priceHtml}
  * added, how often, and from which tab.
  */
 function optionStub(opts) {
-  const o = Object.assign({ confirm: 'dialog', soldOut: '', consent: false, fail: false, late: 0, notes: false }, opts);
+  const o = Object.assign({ confirm: 'dialog', soldOut: '', consent: false, fail: false, late: 0, notes: false, fold: false, pics: false, robot: 0 }, opts);
+  // fold: 25 colours, the last four behind a "More" tab (Superbuy shows a row's first 21)
+  const colours = o.fold ? Array.from({ length: 25 }, (_, i) => 'Colour ' + (i + 1)) : ['Black', 'White'];
   const li = (text, i) => '<li class="sku-item text-li' + (i === 0 ? ' active' : '') + (text === o.soldOut ? ' disabled' : '') + '"><div class="goods-props-image"><span class="sku-text" title="' + text + '">' + text + '</span></div></li>';
+  // pics: colours shown as a picture and a name, the way Superbuy shows a colour that has a photo (tiny copies of it)
+  const picLi = (text, i) => '<li class="sku-item img-li' + (i === 0 ? ' active' : '') + '"><p class="sku-item-content"><img src="//img.alicdn.com/demo/' + text.toLowerCase() + '.jpg_30x30.jpg"></p><span class="sku-name" title="' + text + '"> ' + text + ' </span></li>';
   const off = o.consent || o.late ? ' disabled' : '';
   const rowsHtml = '<dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Color</span><span class="select-tips">Selected: Black</span></dt>' +
-    '<dd class="goods-options-content"><ul class="goods-options-tags">' + ['Black', 'White'].map(li).join('') + '</ul></dd></dl>' +
+    '<dd class="goods-options-content"><ul class="goods-options-tags">' + (o.fold ? colours.slice(0, 21) : colours).map(o.pics ? picLi : li).join('') + (o.fold ? '<li class="more">More ∨</li>' : '') + '</ul></dd></dl>' +
     '<dl class="goods-options-row"><dt class="goods-options-label"><span class="good-propName">Size</span></dt>' +
     '<dd class="goods-options-content"><ul class="goods-options-tags">' + ['S', 'M', 'L', 'XL'].map(li).join('') + '</ul></dd></dl>';
   const notesHtml = '<dl class="goods-options-row textarea"><dt class="goods-options-label">Shopping Agent Notes</dt><dd class="goods-options-content"><textarea id="desc" maxlength="200" class="goods-options-text"></textarea></dd></dl>';
@@ -155,12 +159,18 @@ body{margin:30px;font:14px sans-serif} .goods-options-tags{list-style:none;displ
   </div>
   ${o.consent ? '<div class="rules-container"><div class="rules-operation"><label class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" class="ant-checkbox-input"></span><span>I have read and agree</span></label></div></div>' : ''}
   <div class="goods-commit"><button class="goods-buyNow"${off}>Buy Now</button><button class="goods-addToCart"${off}>Add To Cart</button></div>
+  ${o.robot ? '<div id="robot-check" class="captcha-wrap" style="position:fixed;left:30%;top:30%;padding:24px;background:#fff;border:1px solid #999">Slide to verify you are not a robot</div>' : ''}
 </div></div>
 <script>
 const item = (new URLSearchParams(location.search).get('url') || '').replace(/^.*[=/]/, '').replace(/\\D/g, '');
 const log = (what) => { const all = JSON.parse(localStorage.getItem('rhLog') || '[]'); all.push(what); localStorage.setItem('rhLog', JSON.stringify(all)); };
+const allColours = ${JSON.stringify(colours)};
 document.addEventListener('click', (e) => {
   const li = e.target.closest && e.target.closest('.goods-options-tags li');
+  if (li && li.classList.contains('more')) {
+    if (/More/.test(li.textContent)) li.parentElement.innerHTML = allColours.map((t) => '<li class="sku-item text-li"><div class="goods-props-image"><span class="sku-text" title="' + t + '">' + t + '</span></div></li>').join('') + '<li class="more">Less ∧</li>';
+    return;
+  }
   if (!li || li.classList.contains('disabled')) return;
   for (const x of li.parentElement.children) x.classList.remove('active');
   li.classList.add('active');
@@ -171,6 +181,8 @@ if (lateRows) setTimeout(() => {
   document.querySelector('.goods-sizes').innerHTML = lateRows;
   for (const b of document.querySelectorAll('.goods-commit button')) b.disabled = false;
 }, ${Number(o.late) || 0});
+// a robot check that goes away (as if you had solved it) after a while
+if (${Number(o.robot) || 0}) setTimeout(() => document.getElementById('robot-check').remove(), ${Number(o.robot) || 0});
 const count = document.querySelector('.goods-count');
 document.querySelector('.goods-count-add').addEventListener('click', () => (count.value = String(Number(count.value) + 1)));
 const box = document.querySelector('.rules-operation input');
@@ -470,6 +482,35 @@ const SHEET_TAB = {
   tabs = await agentTabs();
   check('two clicks in quick succession open one agent tab, not two', tabs.length === 1, tabs.map((t) => t.url().slice(-30)));
 
+  // ---- the listing offers a way back to the post it was opened from
+  const backTab = tabs[0];
+  await backTab.bringToFront();
+  let backW = await world(backTab);
+  const backBar = await until(async () => { const b = await barOf(backW); return b.back ? b : null; }, 6000);
+  check('a listing opened from a Reddit post has a "Back to r/…" button in RepHop\'s bar', !!backBar && backBar.back === '← Back to r/FashionReps', backBar);
+  const activeUrl = () => sw.evaluate(async () => { const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); return t ? t.url : ''; });
+  await clickBar(backTab, backW, 'back');
+  const wentBack = await until(async () => (await activeUrl()) === POST, 4000);
+  check('pressing it switches back to the Reddit tab, which is still on the post', !!wentBack && reddit.url() === POST, await activeUrl());
+  // the Reddit tab was closed meanwhile: the page opens again (a local address that loads nothing, so no real site is visited)
+  const GONE = 'http://127.0.0.1:59999/back-test';
+  await sw.evaluate(async (url) => { const s = await chrome.storage.session.get('backTo'); for (const k of Object.keys(s.backTo)) Object.assign(s.backTo[k], { tabId: 987654321, url }); await chrome.storage.session.set(s); }, GONE);
+  const tabsBefore = await sw.evaluate(async () => (await chrome.tabs.query({})).map((t) => t.id));
+  await backTab.bringToFront();
+  await clickBar(backTab, backW, 'back');
+  // RepHop cannot read the address of a tab on a site it has no access to, so the new tab is found by its id
+  const reopened = await until(() => sw.evaluate(async (before) => { const t = (await chrome.tabs.query({})).find((x) => !before.includes(x.id)); return t ? t.id : null; }, tabsBefore), 6000);
+  const pointsThere = reopened && (await sw.evaluate(async (id) => Object.values((await chrome.storage.session.get('backTo')).backTo).some((b) => b.tabId === id), reopened));
+  check('if that tab was closed, the page opens again in a new tab, and back leads there from then on', !!reopened && pointsThere, { reopened, pointsThere });
+  if (reopened) await sw.evaluate((id) => chrome.tabs.remove(id), reopened);
+  // a listing opened from the list has no post behind it, so the button goes
+  await sw.evaluate(() => openLink({ url: 'https://weidian.com/item.html?itemID=7870660857' }));
+  await until(async () => (await agentTabs()).some((t) => /7870660857/.test(t.url())));
+  await sleep(1500);
+  backW = await world((await agentTabs())[0]);
+  const noBack = await barOf(backW);
+  check('a listing opened from the list (not from a post) shows no back button', !noBack.back, noBack);
+
   // ---- ordinary behaviour is preserved; script-made clicks are not acted on
   await reddit.bringToFront();
   await reddit.evaluate(() => {
@@ -744,6 +785,98 @@ const SHEET_TAB = {
   await sb.close();
   await sw.evaluate(() => removeItems(['taobao:655555555501', 'taobao:655555555502']));
 
+  // ---- a gallery post: photos that carry a link of their own get a button, and so does the full-screen viewer
+  const GPOST = 'https://www.reddit.com/r/FashionReps/comments/gal123/haul_pics/';
+  const slide = (n, media) => '<li slot="page-' + n + '" class="relative"><figure><img class="media-lightbox-img" src="https://preview.redd.it/haul-pics-v0-' + media + '.jpg?width=640&auto=webp" alt="r/FashionReps - Haul pics"></figure></li>';
+  const GALLERY_HTML = '<!doctype html><html><head><title>Haul pics</title><style>gallery-carousel{display:block;width:600px;height:400px;overflow:hidden;position:relative}gallery-carousel ul{display:flex;margin:0;padding:0;list-style:none}gallery-carousel li{flex:none;width:600px;height:400px;position:relative}gallery-carousel figure{margin:0;width:100%;height:100%}gallery-carousel img{display:block;width:100%;height:100%;background:#556}</style></head><body>' +
+    '<shreddit-post id="t3_gal123" permalink="/r/FashionReps/comments/gal123/haul_pics/" post-title="Haul pics" subreddit-prefixed-name="r/FashionReps" author="hauler" post-type="gallery"><h1>Haul pics</h1>' +
+    '<gallery-carousel post-id="t3_gal123" permalink="/r/FashionReps/comments/gal123/haul_pics/"><ul>' + slide(1, 'mediaaaa1') + slide(2, 'mediaaaa2') + slide(3, 'mediaaaa3') + '</ul></gallery-carousel>' +
+    '<p>Also this: <a id="gx" href="https://weidian.com/item.html?itemID=7277777779">weidian.com/item.html?itemID=7277777779</a></p></shreddit-post><shreddit-media-lightbox></shreddit-media-lightbox></body></html>';
+  const GALLERY_JSON = JSON.stringify([{ data: { children: [{ kind: 't3', data: { id: 'gal123', title: 'Haul pics', author: 'hauler', subreddit_name_prefixed: 'r/FashionReps', permalink: '/r/FashionReps/comments/gal123/haul_pics/', url: 'https://www.reddit.com/gallery/gal123', selftext: '',
+    gallery_data: { items: [{ media_id: 'mediaaaa1', id: 1, caption: 'Black hoodie', outbound_url: 'https://weidian.com/item.html?itemID=7277777771' }, { media_id: 'mediaaaa2', id: 2, caption: 'Grey sweater https://item.taobao.com/item.htm?id=727777777702' }, { media_id: 'mediaaaa3', id: 3, caption: 'just a pic' }] } } }] } }, { data: { children: [] } }]);
+  const galPage = await fixturePage(GPOST, [[GPOST, GALLERY_HTML], ['https://www.reddit.com/comments/gal123.json', GALLERY_JSON]]);
+  const galW = await world(galPage);
+  const photoPills = () => galW(() => Array.from(document.querySelectorAll('gallery-carousel li')).map((li) => !!li.querySelector('[data-rh-pill]')));
+  const pillsOn = await until(async () => { const p = await photoPills(); return p.some(Boolean) ? p : null; }, 8000);
+  check('in a gallery, each photo that carries its own link gets a save button; a photo without one gets none', JSON.stringify(pillsOn) === '[true,true,false]', pillsOn);
+  await clickUi(galPage, galW, () => root(document.querySelector('li[slot="page-1"] [data-rh-pill]')).querySelector('.save'));
+  const fromPhoto = await until(() => item('weidian:7277777771'), 6000);
+  check('its + saves the item linked on that photo, named by the photo\'s caption, from that post', !!fromPhoto && fromPhoto.label === 'Black hoodie' && /gal123/.test((fromPhoto.sources[0] || {}).postUrl || ''), fromPhoto && { label: fromPhoto.label, src: fromPhoto.sources[0] });
+  // the full-screen viewer shows its own large copy of the photo; the bar offers that photo's item
+  await galPage.evaluate(() => {
+    const v = document.createElement('div');
+    v.id = 'viewer';
+    v.style.cssText = 'position:fixed;inset:0;background:#000;z-index:50;display:grid;place-items:center';
+    v.innerHTML = '<img src="https://preview.redd.it/haul-pics-v0-mediaaaa2.jpg?width=1080&auto=webp" style="width:70vw;height:80vh;background:#556">';
+    document.querySelector('shreddit-media-lightbox').appendChild(v);
+  });
+  const viewerBar = await until(async () => { const b = await barOf(galW); return b.photo ? b : null; }, 5000);
+  check('while a photo with a link fills the screen, the bar offers to save that photo\'s item', !!viewerBar && /Save this photo/.test(viewerBar.photo), viewerBar);
+  await galPage.mouse.move(1270, 10);
+  await sleep(900);
+  await clickBar(galPage, galW, 'photo');
+  const fromViewer = await until(() => item('taobao:727777777702'), 10000);
+  check('and saving it from there keeps the photo\'s caption as its name', !!fromViewer && fromViewer.label === 'Grey sweater', fromViewer && fromViewer.label);
+  await galPage.evaluate(() => document.getElementById('viewer').remove());
+  await sw.evaluate(() => removeItems(['weidian:7277777771', 'taobao:727777777702']));
+  await sleep(500);
+  await clickBar(galPage, galW, 'grab');
+  const allGal = await until(async () => { const a = await item('weidian:7277777771'); const b = await item('taobao:727777777702'); const c = await item('weidian:7277777779'); return a && b && c ? [a, b, c] : null; }, 10000);
+  check('"Save all" also saves the links put on the gallery\'s photos', !!allGal, allGal && allGal.map((x) => x.key));
+  await sw.evaluate(() => removeItems(['weidian:7277777771', 'taobao:727777777702', 'weidian:7277777779']));
+  await galPage.close();
+
+  // ---- a gallery whose photos have no links: "Save from this photo" lists the post's items, the closest looking first
+  const HPOST = 'https://www.reddit.com/r/FashionReps/comments/hal456/my_haul/';
+  const hslide = (n, media) => '<li slot="page-' + n + '" class="relative"><figure><img class="media-lightbox-img" src="https://preview.redd.it/my-haul-v0-' + media + '.jpg?width=640&auto=webp" alt=""></figure></li>';
+  const HAUL_HTML = GALLERY_HTML.split('gal123').join('hal456').replace(/<gallery-carousel([^>]*)><ul>[\s\S]*<\/ul><\/gallery-carousel>/, '<gallery-carousel$1><ul>' + hslide(1, 'haulgrey1') + hslide(2, 'haulgreen2') + hslide(3, 'haulred3') + '</ul></gallery-carousel>').replace(/<p>Also this:[\s\S]*?<\/p>/, '');
+  const small = (m) => 'https://preview.redd.it/my-haul-v0-' + m + '.jpg?width=320&s=abc';
+  const HAUL_JSON = JSON.stringify([{ data: { children: [{ kind: 't3', data: { id: 'hal456', title: 'My haul', author: 'hauler2', subreddit_name_prefixed: 'r/FashionReps', permalink: '/r/FashionReps/comments/hal456/my_haul/', url: 'https://www.reddit.com/gallery/hal456', selftext: '',
+    gallery_data: { items: [{ media_id: 'haulgrey1', id: 1 }, { media_id: 'haulgreen2', id: 2 }, { media_id: 'haulred3', id: 3 }] },
+    media_metadata: { haulgrey1: { p: [{ x: 108, u: small('haulgrey1') + '&w=108' }, { x: 320, u: small('haulgrey1') }] }, haulgreen2: { p: [{ x: 320, u: small('haulgreen2') }] }, haulred3: { p: [{ x: 320, u: small('haulred3') }] } } } }] } },
+  { data: { children: [
+    { kind: 't1', data: { author: 'someone', body: 'nice! mine: https://weidian.com/item.html?itemID=7277777769', permalink: '/r/x/comments/hal456/c/c0/', replies: '' } },
+    { kind: 't1', data: { author: 'hauler2', body: 'Green jacket: https://weidian.com/item.html?itemID=7277777761\nGrey puffer: https://weidian.com/item.html?itemID=7277777762\nRed coat: https://weidian.com/item.html?itemID=7277777763', permalink: '/r/x/comments/hal456/c/c1/', replies: '' } },
+  ] } }]);
+  const haul = await fixturePage(HPOST, [[HPOST, HAUL_HTML], ['https://www.reddit.com/comments/hal456.json', HAUL_JSON]]);
+  const haulW = await world(haul);
+  // the pictures: each product a coloured jacket on white, the first photo the grey one on an orange floor
+  const pics = await haul.evaluate(() => {
+    const draw = (bg, fg, scale) => {
+      const c = document.createElement('canvas'); c.width = 240; c.height = 240;
+      const g = c.getContext('2d'); g.fillStyle = bg; g.fillRect(0, 0, 240, 240);
+      const w = 240 * scale; const x = (240 - w) / 2;
+      g.fillStyle = fg; g.fillRect(x, x, w, w);
+      g.fillStyle = 'rgba(0,0,0,.25)'; for (let y = x; y < x + w; y += 14) g.fillRect(x, y, w, 3);
+      return c.toDataURL('image/png').split(',')[1];
+    };
+    return { green: draw('#f4f4f4', '#3f7a3a', 0.6), grey: draw('#f4f4f4', '#94979c', 0.6), red: draw('#f4f4f4', '#a8322c', 0.6), photo: draw('#c0702f', '#909398', 0.7) };
+  });
+  await sw.evaluate((pics, smalls) => {
+    const geili = (n) => 'https://si.geilicdn.com/demo/haul-' + n + '.png';
+    self.__origHandlers = { photoInfo: handlers.photoInfo, fetchPics: handlers.fetchPics };
+    handlers.photoInfo = async (m) => ({ ok: true, list: m.urls.map((u) => {
+      const id = (u.match(/(\d{9,})/) || [])[1];
+      const n = { 7277777761: 'green', 7277777762: 'grey', 7277777763: 'red' }[id];
+      return { key: 'weidian:' + id, title: '', price: 120, image: n ? geili(n) : '', pics: n ? [geili(n)] : [] };
+    }) });
+    const bytes = { [geili('green')]: pics.green, [geili('grey')]: pics.grey, [geili('red')]: pics.red, [smalls[0]]: pics.photo, [smalls[1]]: pics.green, [smalls[2]]: pics.red };
+    handlers.fetchPics = async (m) => ({ ok: true, list: m.urls.map((u) => (bytes[u] ? { b64: bytes[u], type: 'image/png' } : null)) });
+  }, pics, [small('haulgrey1'), small('haulgreen2'), small('haulred3')]);
+  const gpBar = await until(async () => { const b = await barOf(haulW); return b.gpick ? b : null; }, 8000);
+  check('a gallery photo with no link of its own: the bar offers "Save from this photo"', !!gpBar && /Save from this photo/.test(gpBar.gpick) && !gpBar.photo, gpBar);
+  await clickBar(haul, haulW, 'gpick');
+  const pickerRead = () => haulW(() => { const p = ui().querySelector('.picks'); return { open: !p.hidden, head: (p.querySelector('.head b') || {}).textContent, hint: (p.querySelector('.hint') || {}).textContent, rows: Array.from(p.querySelectorAll('.row')).map((r) => r.querySelector('.what').textContent + (r.classList.contains('best') ? ' [best]' : '')) }; });
+  const listed = await until(async () => { const p = await pickerRead(); return p.open && p.rows.length === 3 ? p : null; }, 6000);
+  check('it lists the poster\'s linked items by their names (another commenter\'s link is left out), for photo 1 of 3', !!listed && listed.head === 'Which item is in photo 1 of 3?' && listed.rows.some((r) => /Grey puffer/.test(r)) && !listed.rows.some((r) => /7277777769/.test(r)), listed);
+  const ranked = await until(async () => { const p = await pickerRead(); return p.hint && /closest|Not sure/.test(p.hint) ? p : null; }, 60000, 500);
+  check('after comparing the photo with each item\'s pictures on this computer, the grey puffer comes first, marked as the match', !!ranked && /^Grey puffer/.test(ranked.rows[0]) && / \[best\]$/.test(ranked.rows[0]) && /Looks like this photo/.test(ranked.rows[0]), ranked);
+  await clickUi(haul, haulW, () => ui().querySelector('.picks .row button.go'));
+  const fromPicker = await until(() => item('weidian:7277777762'), 6000);
+  check('its + Save saves that item, named as the poster named it', !!fromPicker && fromPicker.label === 'Grey puffer', fromPicker && fromPicker.label);
+  await sw.evaluate(() => { Object.assign(handlers, self.__origHandlers); return removeItems(['weidian:7277777762']); });
+  await haul.close();
+
   // ---- already on the agent's site: saving from there, with the options picked on the page
   const optRoutes = [['https://www.superbuy.com/en/page/buy/', optionStub()]];
   // The page arrives with Black / S already selected by the site. Saving without touching anything must
@@ -789,6 +922,15 @@ const SHEET_TAB = {
     agent: document.getElementById('q-agent').value, pick: document.getElementById('pick-agent').hidden, xs: document.querySelectorAll('#items .item .x').length,
   }));
   check('panel lists every item with a total, shows the chosen agent, and each card has a delete button', total === 11 && list.cards === total && /11 items/.test(list.count) && /¥/.test(list.total) && list.agent === 'superbuy' && list.pick === true && list.xs === total, list);
+  const weights = await panel.evaluate(() => ({ total: document.getElementById('total').textContent, cards: Array.from(document.querySelectorAll('#items .item .meta .weight')).map((w) => w.textContent) }));
+  check('the list estimates what the haul weighs, in its total and on each card', /~[\d.]+ kg/.test(weights.total) && weights.cards.length > 0 && weights.cards.every((w) => /^~[\d.]+ kg$/.test(w)), weights);
+  // your own weight replaces the estimate
+  const wKey = await panel.evaluate(() => document.querySelector('#items .item .meta .weight').closest('.item').dataset.key);
+  await sw.evaluate((k) => updateItems([k], { weight: '1234' }), wKey);
+  const ownW = await until(() => panel.evaluate((k) => { const li = Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === k); const w = li && li.querySelector('.meta .weight'); return w && w.textContent === '1.23 kg' ? w.textContent : null; }, wKey), 4000);
+  await sw.evaluate((k) => updateItems([k], { weight: '' }), wKey);
+  const backToGuess = await until(async () => { const it = await item(wKey); return it && it.weight === undefined ? it : null; }, 4000);
+  check('an item\'s own weight (set under Edit) replaces the estimate, and clearing it brings the estimate back', !!ownW && !!backToGuess, { ownW, cleared: !!backToGuess });
   const thumbs = await panel.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 2500));
     return Array.from(document.querySelectorAll('#items .item')).map((li) => { const img = li.querySelector('.thumb img'); return li.dataset.key + ' ' + (img ? img.naturalWidth : 'no-img'); });
@@ -840,7 +982,7 @@ const SHEET_TAB = {
   await sleep(4200);
   await panel.click('#bulk-clear');
 
-  await panel.evaluate(() => Array.from(document.querySelectorAll('#items .item')).find((li) => li.dataset.key === 'weidian:7237185689').querySelector('.acts button:last-child').click());
+  await panel.evaluate(() => Array.from(document.querySelectorAll('#items .item')).find((li) => li.dataset.key === 'weidian:7237185689').querySelector('.acts > button:last-child').click());
   await sleep(300);
   await panel.evaluate(() => {
     const ed = document.querySelector('.editor');
@@ -854,7 +996,7 @@ const SHEET_TAB = {
   const edited = await until(async () => { const it = await item('weidian:7237185689'); return it.status === 'bought' && it.qty === 2 ? it : null; });
   check('editing tags, note, quantity and status is saved', !!edited && edited.note === 'black, size L' && edited.tags.join() === 'tops,size-l', edited && { note: edited.note, qty: edited.qty, tags: edited.tags, status: edited.status });
   const typeText = await panel.evaluate(() => document.querySelector('.editor').querySelectorAll('select')[2].selectedOptions[0].textContent);
-  check('the editor works out what kind of item it is (for sizes)', /Work it out \(tops\)/.test(typeText), typeText);
+  check('the editor works out what kind of item it is (for sizes)', /Automatic \(tops\)/.test(typeText), typeText);
   await sleep(400);
   if (SHOTS) await panel.screenshot({ path: path.join(SHOTS, 'panel-edit.png'), fullPage: true });
   await panel.evaluate(() => Array.from(document.querySelectorAll('#items .item')).find((li) => li.dataset.key === 'weidian:7237185689').querySelectorAll('.acts button')[2].click());
@@ -1045,7 +1187,7 @@ const SHEET_TAB = {
   // ============================== 5b. one item, straight from its card; drop-downs
   //   E  weidian:7266666661  "Consent tee", White picked, two of them; the listing has the risk notice unticked
   //   F  weidian:7266666663  the site answers Add To Cart with "Add to cart failed!"
-  const more = { 7266666661: { consent: true }, 7266666663: { fail: true }, 7266666667: { late: 3000 }, 7266666668: { notes: true } };
+  const more = { 7266666661: { consent: true }, 7266666663: { fail: true }, 7266666667: { late: 3000 }, 7266666668: { notes: true }, 7266666665: { fold: true }, 7266666666: { pics: true } };
   const serveMore = (req) => {
     const u = req.url();
     if (!u.startsWith('https://www.superbuy.com/en/page/buy/')) return req.continue();
@@ -1069,6 +1211,27 @@ const SHEET_TAB = {
   // Looking at the listing is enough for RepHop to learn which choices it offers.
   const learnt = await until(async () => { const it = await item('weidian:7266666661'); return it && it.choicesFrom === 'agent' ? it : null; }, 8000);
   check('opening a listing at the agent teaches RepHop its choices', !!learnt && JSON.stringify(learnt.choices) === JSON.stringify([{ n: 'Color', o: ['Black', 'White'] }, { n: 'Size', o: ['S', 'M', 'L', 'XL'] }]), learnt && learnt.choices);
+  // a long row is folded behind "More": RepHop opens it and learns every choice, not just the first 21
+  await sw.evaluate(async () => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666665', label: 'Many colours' }]);
+    await openLink({ key: 'weidian:7266666665', disposition: 'reuse' }, null);
+  });
+  const folded = await until(async () => { const it = await item('weidian:7266666665'); return it && it.choicesFrom === 'agent' ? it : null; }, 10000);
+  check('a row folded behind "More" is opened, so every one of its choices is learnt', !!folded && folded.choices[0].o.length === 25 && folded.choices[0].o[24] === 'Colour 25', folded && folded.choices.map((g) => g.o.length));
+  await sw.evaluate(async () => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666666', label: 'Pictured colours' }]);
+    await openLink({ key: 'weidian:7266666666', disposition: 'reuse' }, null);
+  });
+  const pictured = await until(async () => { const it = await item('weidian:7266666666'); return it && it.choicesFrom === 'agent' ? it : null; }, 10000);
+  check('a colour shown with a picture keeps its picture (full size, not the tiny copy), for the card to show the colourway picked', !!pictured && JSON.stringify(pictured.choices[0].i) === JSON.stringify(['https://img.alicdn.com/demo/black.jpg', 'https://img.alicdn.com/demo/white.jpg']) && !pictured.choices[1].i, pictured && pictured.choices);
+  const shown = await sw.evaluate(async () => { const { items } = await chrome.storage.local.get('items'); const it = items['weidian:7266666666']; return [U.pickImage(it, null, null), U.pickImage(Object.assign({}, it, { options: [{ n: 'Color', v: 'White' }] }), null, null)]; });
+  check('the picture shown is the one of the colour picked', JSON.stringify(shown) === JSON.stringify(['', 'https://img.alicdn.com/demo/white.jpg']), shown);
+  await sw.evaluate(() => removeItems(['weidian:7266666666']));
+  await sw.evaluate(async () => {
+    await removeItems(['weidian:7266666665']);
+    await openLink({ key: 'weidian:7266666661', disposition: 'reuse' }, null);
+  });
+  await sleep(1500);
 
   await panel.bringToFront();
   await panel.click('.tabs [data-view="list"]');
@@ -1145,6 +1308,30 @@ const SHEET_TAB = {
   const notesAsk = await until(async () => (await toastsOf(ow).catch(() => [])).find((x) => /no buttons for its choices/.test(x.text)), 30000, 400);
   await sleep(1500);
   check('H: a listing with a notes box instead of choices is handed to you, never added with empty notes', !!notesAsk && /Wanted: ×3/.test(notesAsk.text) && !((await oneLog()) || []).some((x) => x.startsWith('7266666668')) && (await item('weidian:7266666668')).status === 'saved', { toast: notesAsk, log: await oneLog() });
+  // I: the agent asks you to prove you are not a robot; J: "Let me press Add To Cart myself"
+  more[7266666671] = { robot: 3500 };
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
+  await sw.evaluate(async () => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666671', label: 'Checked tee' }, { url: 'https://weidian.com/item.html?itemID=7266666672', label: 'Pressed tee' }]);
+    await updateItems(['weidian:7266666671'], { options: [{ n: 'Color', v: 'White' }, { n: 'Size', v: 'M' }] });
+    await updateItems(['weidian:7266666672'], { options: [{ n: 'Color', v: 'Black' }, { n: 'Size', v: 'L' }] });
+  });
+  await sw.evaluate(() => queueOp({ op: 'start', auto: true, keys: ['weidian:7266666671'] }, null));
+  const robotAsk = await until(async () => (await toastsOf(ow).catch(() => [])).find((x) => /not a robot/.test(x.text)), 30000, 300);
+  const robotDone = await until(async () => { const it = await item('weidian:7266666671'); return it && it.status === 'carted' ? it : null; }, 30000, 400);
+  check('I: when the agent asks you to prove you are not a robot, RepHop leaves the check to you, waits, and carries on once it has gone (one press)', !!robotAsk && !!robotDone && ((await oneLog()) || []).filter((x) => x.startsWith('7266666671')).join() === '7266666671 White/M', { toast: robotAsk && robotAsk.text, log: await oneLog() });
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
+  await sw.evaluate(() => handlers.settings({ patch: { pressMyself: true } }));
+  await sw.evaluate(() => queueOp({ op: 'start', auto: true, keys: ['weidian:7266666672'] }, null));
+  const ready = await until(async () => (await toastsOf(ow).catch(() => [])).find((x) => /Press Add To Cart on the page/.test(x.text)), 30000, 300);
+  await sleep(1500);
+  const notYet = ((await oneLog()) || []).filter((x) => x.startsWith('7266666672'));
+  const setUp = await one.evaluate(() => Array.from(document.querySelectorAll('.goods-options-tags li.active')).map((li) => li.textContent)).catch(() => []);
+  if (ready) await one.click('.goods-addToCart'); // a real press, as you would
+  const pressedDone = await until(async () => { const it = await item('weidian:7266666672'); return it && it.status === 'carted' ? it : null; }, 15000, 400);
+  check('J: with "Let me press Add To Cart myself" RepHop sets the colour and size and waits; your own press adds it and RepHop marks it', !!ready && notYet.length === 0 && setUp.join() === 'Black,L' && !!pressedDone && ((await oneLog()) || []).filter((x) => x.startsWith('7266666672')).join() === '7266666672 Black/L', { toast: ready && ready.text, notYet, setUp, log: await oneLog() });
+  await sw.evaluate(() => handlers.settings({ patch: { pressMyself: false } }));
+  await sw.evaluate(() => queueOp({ op: 'stop' }, null));
   // two presses on "Skip" in quick succession move one step, not two
   await sw.evaluate(() => queueOp({ op: 'stop' }, null));
   const twice = await sw.evaluate(async () => {
@@ -1172,16 +1359,16 @@ const SHEET_TAB = {
   await sleep(400);
   const noName = await panel.evaluate(() => ({ copied: window.__copied || '', toast: Array.from(document.querySelectorAll('#toasts .toast')).map((t) => t.textContent).join(' | ') }));
   check('sharing asks for your name first', !noName.copied && /Type your name first/.test(noName.toast), noName);
-  await panel.type('#g-me', 'Ahmed');
+  await panel.type('#g-me', 'Jordan');
   await panel.click('#g-copy');
   const code = await until(() => panel.evaluate(() => window.__copied || ''), 5000);
   const decoded = await panel.evaluate((c) => RepUtil.decodeShare('yo here is my list ' + c + ' thanks'), code);
   const mineE = decoded && decoded.items.find((x) => x.key === 'weidian:7266666661');
-  check('"Copy share code" gives one line of text that carries each item with its options, quantity and size', /^RH1\.[A-Za-z0-9_-]+$/.test(code) && !!decoded && decoded.name === 'Ahmed' && decoded.items.length >= 8 && !decoded.items.some((x) => x.key.startsWith('yupoo:')) && !!mineE && mineE.qty === 2 && mineE.size === 'L' && mineE.options.some((o) => o.v === 'White'), { length: code.length, name: decoded && decoded.name, n: decoded && decoded.items.length, mineE });
+  check('"Copy share code" gives one line of text that carries each item with its options, quantity and size', /^RH1\.[A-Za-z0-9_-]+$/.test(code) && !!decoded && decoded.name === 'Jordan' && decoded.items.length >= 8 && !decoded.items.some((x) => x.key.startsWith('yupoo:')) && !!mineE && mineE.qty === 2 && mineE.size === 'L' && mineE.options.some((o) => o.v === 'White'), { length: code.length, name: decoded && decoded.name, n: decoded && decoded.items.length, mineE });
   // a friend's code arrives
   const samCode = await panel.evaluate(async () => RepUtil.encodeShare({ app: 'RepHop', haul: 1, name: 'Sam', at: Date.now(), items: [
     { k: 'weidian:7266666662', t: 'Sam hoodie', p: 100, q: 2, o: [['Color', 'Black']], s: 'XL' },
-    { k: 'weidian:7266666661', t: 'Same tee as Ahmed', p: 50, o: [['Color', 'Black'], ['Size', 'S']] },
+    { k: 'weidian:7266666661', t: 'Same tee as Jordan', p: 50, o: [['Color', 'Black'], ['Size', 'S']] },
     { k: 'yupoo:nope/1', t: 'not a product' }, { k: 'junk' },
   ] }));
   await panel.click('#g-add');
@@ -1205,8 +1392,13 @@ const SHEET_TAB = {
     samPicks: Array.from(document.querySelectorAll('#g-people .g-person')).pop().querySelector('.badge.picked').textContent,
   }));
   const samRow = table.rows.find((r) => /^Sam/.test(r[0])) || [];
-  check('the haul shows everyone: a total, a row per person with what they owe, and each item with that person\'s choices', table.rows.length === 2 && /^Ahmed \(you\)/.test(table.rows[0][0]) && /¥250/.test(samRow[1]) && /5\.00/.test(samRow[2]) && /2 people/.test(table.note) && table.heads.join() === 'Ahmed (you),Sam' && /Black · size XL/.test(table.samPicks), table);
+  check('the haul shows everyone: a total, a row per person with what they owe, and each item with that person\'s choices', table.rows.length === 2 && /^Jordan \(you\)/.test(table.rows[0][0]) && /¥250/.test(samRow[1]) && /5\.00/.test(samRow[2]) && /2 people/.test(table.note) && table.heads.join() === 'Jordan (you),Sam' && /Black · size XL/.test(table.samPicks), table);
   if (SHOTS) await panel.screenshot({ path: path.join(SHOTS, 'panel-group.png'), fullPage: true });
+  await panel.select('#g-split', 'weight');
+  const byWeight = await until(async () => { const g = (await store(['group'])).group; return g && g.split === 'weight' ? g : null; }, 4000);
+  await sleep(500);
+  const wTable = await panel.evaluate(() => ({ note: document.getElementById('g-sum-note').textContent, rows: Array.from(document.querySelectorAll('#g-rows tr')).map((tr) => Array.from(tr.children).map((td) => td.textContent)) }));
+  check('a group haul shows each person\'s estimated weight and can split shipping by weight', !!byWeight && /~[\d.]+ kg/.test(wTable.note) && wTable.rows.every((r) => /~[\d.]+ kg/.test(r[0])) && wTable.rows.every((r) => /\+ /.test(r[2])), wTable);
   await panel.select('#g-split', 'cost');
   await sleep(500);
   const byCost = await panel.evaluate(() => Array.from(document.querySelectorAll('#g-rows tr')).map((tr) => tr.children[2].textContent));
@@ -1215,7 +1407,7 @@ const SHEET_TAB = {
   await panel.evaluate(() => document.querySelector('[data-gview="all"]').click());
   await sleep(300);
   const together = await panel.evaluate(() => Array.from(document.querySelectorAll('#g-people .item')).map((li) => li.querySelector('.badge.who').textContent + ': ' + li.querySelector('.title').textContent));
-  check('"All together" lists every item once per person, tagged with whose it is, the same product side by side', together.filter((x) => /^Sam: /.test(x)).length === 2 && Math.abs(together.indexOf('Sam: Same tee as Ahmed') - together.findIndex((x) => /^Ahmed \(you\): Consent tee/.test(x))) === 1, together);
+  check('"All together" lists every item once per person, tagged with whose it is, the same product side by side', together.filter((x) => /^Sam: /.test(x)).length === 2 && Math.abs(together.indexOf('Sam: Same tee as Jordan') - together.findIndex((x) => /^Jordan \(you\): Consent tee/.test(x))) === 1, together);
   await panel.evaluate(() => document.querySelector('[data-gview="people"]').click());
   await sleep(300);
 
@@ -1239,6 +1431,75 @@ const SHEET_TAB = {
   const teeLog = ((await oneLog()) || []).filter((x) => x.startsWith('7266666661'));
   check('the same product wanted by two people is added once for each, with each person\'s own choices', !!samTee && teeLog.join(' | ') === '7266666661 White/L x2 | 7266666661 Black/S', teeLog);
   await until(async () => !(await store(['queue'])).queue.active, 8000);
+
+  // ---- two picks from one listing (the top and the trousers of a set): both go into the cart in one run
+  const SET = 'weidian:7266666664';
+  await sw.evaluate(async (k) => {
+    await saveEntries([{ url: 'https://weidian.com/item.html?itemID=7266666664', label: 'Two-piece set' }]);
+    await updateItems([k], { options: [{ n: 'Color', v: 'Black' }, { n: 'Size', v: 'M' }] });
+    await mutateItems((items) => { items[k].choices = [{ n: 'Color', o: ['Black', 'White'] }, { n: 'Size', o: ['S', 'M', 'L', 'XL'] }]; items[k].choicesFrom = 'agent'; });
+  }, SET);
+  await panel.bringToFront();
+  await panel.evaluate(() => document.querySelector('.tabs [data-view="list"]') && document.querySelector('.tabs [data-view="list"]').click());
+  const setCard = (fn) => panel.evaluate((k, fn) => { const li = Array.from(document.querySelectorAll('#items .item')).find((x) => x.dataset.key === k); return li ? new Function('li', fn)(li) : null; }, SET, fn);
+  await until(() => setCard('return !!li.querySelector(".add-pick")'), 6000);
+  await setCard('li.querySelector(".add-pick").click()');
+  const added = await until(async () => { const it = await item(SET); return it && it.more && it.more.length === 1 ? it.more[0] : null; }, 5000);
+  check('"+ Another colour or size" adds a second pick to the card, starting with the size of the first', !!added && JSON.stringify(added.options) === JSON.stringify([{ n: 'Size', v: 'M' }]) && added.status === 'saved', added);
+  await until(() => setCard('return !!li.querySelector(".pick-row select")'), 4000);
+  await setCard('const sel = li.querySelector(".pick-row select"); sel.value = String(Array.from(sel.options).findIndex((o) => o.textContent === "White") - 1); sel.dispatchEvent(new Event("change", { bubbles: true }));');
+  const chosen = await until(async () => { const it = await item(SET); const p = it.more[0]; return p.options.some((o) => o.v === 'White') ? p : null; }, 5000);
+  const twoRows = await setCard('return { main: Array.from(li.querySelectorAll(":scope > .opts select")).map((s) => s.selectedOptions[0].textContent), pick: Array.from(li.querySelectorAll(".pick-row select")).map((s) => s.selectedOptions[0].textContent), price: (li.querySelector(".meta .price") || {}).textContent }');
+  check('the second pick has drop-downs of its own, and the card counts both picks', !!chosen && JSON.stringify(twoRows.main) === '["Black","M"]' && JSON.stringify(twoRows.pick) === '["White","M"]', twoRows);
+  await one.evaluate(() => localStorage.removeItem('rhLog'));
+  await setCard('Array.from(li.querySelectorAll(".acts button")).find((b) => b.textContent === "Add to cart").click()');
+  const bothIn = await until(async () => { const it = await item(SET); return it.status === 'carted' && it.more[0].status === 'carted' ? it : null; }, 40000, 400);
+  const setLog = ((await oneLog()) || []).filter((x) => x.startsWith('7266666664'));
+  check('Add to cart on the card adds both picks from the same listing, one after the other, each with its own colour', !!bothIn && setLog.join(' | ') === '7266666664 Black/M | 7266666664 White/M', { log: setLog, status: bothIn && [bothIn.status, bothIn.more[0].status] });
+  await until(async () => !(await store(['queue'])).queue.active, 8000);
+  await panel.bringToFront();
+  await until(() => setCard('return !!li.querySelector(".pick-x")'), 4000);
+  await setCard('li.querySelector(".pick-x").click()');
+  const gone = await until(async () => { const it = await item(SET); return !it.more ? it : null; }, 4000);
+  await panel.evaluate(() => Array.from(document.querySelectorAll('#toasts .toast button')).find((b) => b.textContent === 'Undo').click());
+  const back = await until(async () => { const it = await item(SET); return it.more && it.more.length === 1 ? it.more[0] : null; }, 4000);
+  check('a pick can be removed, and Undo brings it back with its choices and status', !!gone && !!back && back.status === 'carted' && back.options.some((o) => o.v === 'White'), back);
+
+  // ---- on the agent's page: the bar's "In cart" lists what you want from this listing, and adds more
+  await one.bringToFront();
+  await one.reload({ waitUntil: 'domcontentloaded' });
+  await sleep(2200);
+  const ow2 = await world(one);
+  const setBar = await until(async () => { const b = await barOf(ow2); return b.save && /2 in cart$/i.test(b.save) ? b : null; }, 6000);
+  check('on the listing, the bar says what of it is in the cart, with how many picks there are', !!setBar && /(All|of) 2 in cart$/.test(setBar.save), setBar);
+  await clickBar(one, ow2, 'save');
+  const popRead = () => ow2(() => { const p = ui().querySelector('.picks'); return { open: !p.hidden, rows: Array.from(p.querySelectorAll('.row')).map((r) => r.querySelector('.what').textContent + ' | ' + r.lastElementChild.textContent.trim()), sel: (p.querySelector('.here .sel') || {}).textContent || '' }; });
+  const pop = await until(async () => { const p = await popRead(); return p.open ? p : null; }, 4000);
+  check('clicking it opens the list of picks above the bar, each with its colour, size and whether it is in the cart', !!pop && JSON.stringify(pop.rows) === JSON.stringify(['Black · M | In cart', 'White · M | In cart']) && /^Selected on this page: /.test(pop.sel), pop);
+  await one.click('.goods-options-row:nth-of-type(1) li:nth-child(2)');
+  await one.click('.goods-options-row:nth-of-type(2) li:nth-child(3)');
+  await sleep(500);
+  const popSel = await popRead();
+  await clickUi(one, ow2, () => Array.from(ui().querySelectorAll('.picks .here button')).find((b) => b.textContent === '+ Add to my list'));
+  const third = await until(async () => { const it = await item(SET); return it.more && it.more.length === 2 ? it.more[1] : null; }, 5000);
+  check('"+ Add to my list" keeps what is selected on the page as another pick (the list follows your clicks)', /White · L/.test(popSel.sel) && !!third && JSON.stringify(third.options) === JSON.stringify([{ n: 'Color', v: 'White' }, { n: 'Size', v: 'L' }]) && third.status === 'saved', { sel: popSel.sel, third });
+  const pop3 = await until(async () => { const p = await popRead(); return p.rows.length === 3 ? p : null; }, 4000);
+  check('the new pick shows up in the list with its own Add to cart', !!pop3 && pop3.rows[2] === 'White · L | Add to cart', pop3);
+  // another colour added with the page's own button becomes a pick of its own; the first pick is kept
+  await one.click('.goods-options-row:nth-of-type(1) li:nth-child(1)');
+  await one.click('.goods-options-row:nth-of-type(2) li:nth-child(4)');
+  await sleep(300);
+  await one.click('.goods-addToCart');
+  const fourth = await until(async () => { const it = await item(SET); return it.more && it.more.length === 3 ? it : null; }, 9000);
+  check('pressing the page\'s own Add To Cart with another colour adds it as a new pick in the cart, and the first pick keeps its colour', !!fourth && JSON.stringify(fourth.more[2].options) === JSON.stringify([{ n: 'Color', v: 'Black' }, { n: 'Size', v: 'XL' }]) && fourth.more[2].status === 'carted' && JSON.stringify(fourth.options) === JSON.stringify([{ n: 'Color', v: 'Black' }, { n: 'Size', v: 'M' }]), fourth && { main: fourth.options, more: fourth.more });
+  await one.click('.goods-options-row:nth-of-type(1) li:nth-child(2)');
+  await one.click('.goods-options-row:nth-of-type(2) li:nth-child(3)');
+  await sleep(300);
+  await one.evaluate(() => { for (const d of document.querySelectorAll('.alert-dialog')) d.remove(); });
+  await one.click('.goods-addToCart');
+  const fifth = await until(async () => { const it = await item(SET); return it.more[1].status === 'carted' ? it : null; }, 9000);
+  check('adding one of your saved picks by hand marks that pick, without making a new one', !!fifth && fifth.more.length === 3, fifth && fifth.more.map((p) => p.status));
+  await sw.evaluate((k) => removeItems([k]), SET);
   await sw.evaluate(() => chrome.storage.local.remove('cartRun'));
   await panel.bringToFront();
   await sleep(400);
@@ -1546,6 +1807,172 @@ const SHEET_TAB = {
       if (SHOTS && !ids.post) await page.screenshot({ path: path.join(SHOTS, 'real-' + file.replace(/\.html$/, '') + '.png') });
       await page.close();
     }
+  }
+
+  // ============================== copying the agent's cart into the list
+  {
+    // Laid out the way Superbuy's live cart page is (October 2026): one section per line, a link to the listing it
+    // came from, the choices as "name:value" pairs with nothing between them, the price and the quantity.
+    const buy = (url) => '/en/page/buy/?url=' + encodeURIComponent(url) + '&amp;nTag=Cart-product&amp;trackPayload=pc_shopping_cart_page';
+    const cartLine = (href, title, sku, price, qty) => '<section class="cart-good-item-container"><div class="goods-item goods-item-selected"><label class="ant-checkbox-wrapper ant-checkbox-wrapper-checked"><span class="ant-checkbox ant-checkbox-checked"><input type="checkbox" class="ant-checkbox-input" checked></span></label>' +
+      '<a target="_blank" href="' + href + '" aria-label="goodsLink"><div class="goods-img-box"><div class="common-img-wrap"><img src="https://img.alicdn.com/bao/uploaded/i2/22/O1CN01fixture_!!22.jpg_80x80q90.jpg" referrerpolicy="no-referrer" alt="goods-image" class="common-img"></div></div></a>' +
+      '<div class="goods-name"><a target="_blank" href="' + href + '" aria-label="goodsLink"><p class="title">' + title + '</p></a><p class="color-type">' + sku + '</p><div class="waring TB-warning"></div></div><div class="remark"></div>' +
+      '<div class="unit-price-box" translate="no"><p class="discount-price">CN ￥' + price + '</p></div><div class="count-operation"><span class="reduce disabled">-</span><div class="ant-input-number"><div class="ant-input-number-input-wrap"><input role="spinbutton" class="ant-input-number-input" aria-label="good-number" value="' + qty + '"></div></div><span class="add">+</span></div>' +
+      '<div class="good-item-total-price">CN ￥' + price + '</div><div class="remove">Delete</div></div></section>';
+    // a line whose details the site could not load, and one of the agent's own products (no shop link)
+    const failedLine = '<section class="cart-good-item-container"><div class="goods-item load-failed"><label class="ant-checkbox-wrapper"><span class="ant-checkbox"><input type="checkbox" disabled></span></label><a target="_blank" href="' + buy('https://item.taobao.com/item.htm?id=1036519107099') + '" aria-label="goodsLink"><div class="goods-img-box"><img class="goods-img" src="/img/good-item-default.png"></div></a><div class="failed-msg"><p>Unable to get the item information</p></div></div></section>';
+    const fleece = 'https://item.taobao.com/item.htm?id=1036519107016';
+    const cartHtml = (trousers) => '<!doctype html><html><head><title>Shopping Cart - Superbuy</title></head><body><div class="shopping-cart shopping-cart-container"><div class="shopping-cart-content"><div class="shopping-cart-inner"><div class="cart-shop-item-container shop-item"><div class="shop-item-info"><a class="shop-name" href="#">Fixture shop</a></div><div class="shop-goods">' +
+      cartLine(buy(fleece), 'Lambfleece set', 'size:M Color:Navy shirt ', '300.00', 1) +
+      cartLine(buy(fleece), 'Lambfleece set', 'size:M Color:Navy trousers ', '280.00', trousers) +
+      cartLine(buy('https://weidian.com/item.html?itemId=7237185689&vc_cps_track=1459920903_0_0'), 'Fixture tee', 'Color:Black size:L ', '128.00', 1) +
+      failedLine + cartLine('/en/page/goodsdetail/?id=203228&amp;nTag=Cart-product', 'Superbuy own product', 'Color:Red ', '20.00', 1) +
+      '</div></div></div></div></div></body></html>';
+    const cartUrl = 'https://www.superbuy.com/en/page/shoppingcart/';
+    await sw.evaluate(() => handlers.settings({ patch: { cartSync: false } }));
+    await sw.evaluate(() => mutateItems((items) => {
+      const it = items['weidian:7237185689'];
+      if (!it) return SKIP;
+      delete it.more;
+      Object.assign(it, { status: 'saved', options: [], qty: 1 });
+      return true;
+    }));
+    const hadTee = !!(await item('weidian:7237185689'));
+    const cp = await fixturePage(cartUrl, [[cartUrl, cartHtml(2)], ['https://img.alicdn.com/', '']]);
+    const cw = await world(cp);
+    const cartBtn = () => cw(() => {
+      const b = ui().querySelector('.bar [data-act="cart"]');
+      return b && !b.hidden && ui().querySelector('.bar').classList.contains('on') ? b.textContent.trim() : null;
+    });
+    const cartToast = (re) => until(() => cw((src) => Array.from(ui().querySelectorAll('.toast span')).map((s) => s.textContent).find((t) => new RegExp(src).test(t)) || null, re), 6000);
+    const offered = await until(cartBtn, 8000);
+    check('on the Superbuy cart page the bar offers to copy the cart into the list, counting the lines it can read', offered === 'Copy cart to RepHop (3)', offered);
+    await clickBar(cp, cw, 'cart');
+    const opts = (list) => (list || []).map((x) => x.n + '=' + x.v).join(', ');
+    const set1 = await until(async () => {
+      const it = await item('taobao:1036519107016');
+      return it && it.more && it.more.length ? it : null;
+    }, 8000);
+    check('copying the cart saves each listing and marks it In cart with the choices, quantity and price from the cart; the shirt and trousers of one set become two picks', !!set1 && set1.status === 'carted' && opts(set1.options) === 'size=M, Color=Navy shirt' && set1.qty === 1 && set1.more.length === 1 && opts(set1.more[0].options) === 'size=M, Color=Navy trousers' && set1.more[0].qty === 2 && set1.more[0].status === 'carted' && set1.price === 300 && set1.title === 'Lambfleece set' && /alicdn/.test(set1.image) && set1.sources.some((x) => x.postTitle === 'Your Superbuy cart'), set1);
+    const tee = await item('weidian:7237185689');
+    check('a listing that was already in the list is marked In cart with what the cart holds', hadTee && tee.status === 'carted' && opts(tee.options) === 'Color=Black, size=L' && !tee.more, tee && { status: tee.status, options: tee.options, more: tee.more });
+    const said = await cartToast('Superbuy cart');
+    const copied = await until(async () => {
+      const t = await cartBtn();
+      return /copied/.test(t || '') ? t : null;
+    }, 4000);
+    check('it says what it did, including the lines it could not read, and the bar then says the cart is copied', /3 items \(2 new, 1 updated\)/.test(said || '') && /2 items could not be read/.test(said || '') && copied === 'Cart copied to RepHop', { said, copied });
+    // again: nothing changes and nothing is doubled
+    await cw(() => Array.from(ui().querySelectorAll('.toast')).forEach((t) => t.remove()));
+    await clickBar(cp, cw, 'cart');
+    const said2 = await cartToast('already has everything');
+    const set2 = await item('taobao:1036519107016');
+    const tee2 = await item('weidian:7237185689');
+    check('copying the same cart again changes nothing and doubles nothing', !!said2 && set2.more.length === 1 && set2.more[0].qty === 2 && opts(set2.options) === opts(set1.options) && !tee2.more && tee2.qty === 1, { said2, more: set2.more });
+    await cp.close();
+
+    // From the list: it opens the cart and copies it in by itself once it shows.
+    await closeAgentTabs();
+    const lp = await browser.newPage();
+    await lp.goto('chrome-extension://' + extId + '/panel/panel.html', { waitUntil: 'domcontentloaded' });
+    await sleep(1500);
+    await lp.click('[data-view="add"]');
+    await sleep(300);
+    await lp.click('#add-cart');
+    const ct = await until(async () => (await browser.pages()).find((p) => p.url().startsWith(cartUrl)), 8000);
+    const asked = (await sw.evaluate(() => chrome.storage.session.get('cartImport'))).cartImport;
+    if (ct) {
+      await ct.setRequestInterception(true);
+      ct.on('request', (req) => {
+        const u = req.url();
+        if (u.startsWith(cartUrl)) return req.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: cartHtml(3) });
+        if (/^https:\/\/(www\.superbuy\.com|img\.alicdn\.com)\//.test(u)) return req.respond({ status: 404, body: '' });
+        req.continue();
+      });
+      await ct.reload({ waitUntil: 'domcontentloaded' });
+    }
+    const auto = await until(async () => {
+      const it = await item('taobao:1036519107016');
+      return it && it.more && it.more[0] && it.more[0].qty === 3 ? it : null;
+    }, 12000);
+    const left = (await sw.evaluate(() => chrome.storage.session.get('cartImport'))).cartImport;
+    check('"Copy my Superbuy cart" in the list opens the cart and copies it in by itself once it shows (the trousers went up to 3 there)', !!ct && !!asked && !!auto && auto.more.length === 1 && !left, { tab: !!ct, asked: !!asked, more: auto && auto.more, left });
+    if (ct) await ct.close();
+    await lp.close();
+
+    // Marking without adding: the ▾ beside Add to cart, for things you added at the agent yourself
+    const mp = await browser.newPage();
+    await mp.goto('chrome-extension://' + extId + '/panel/panel.html', { waitUntil: 'domcontentloaded' });
+    await sleep(1500);
+    const markKey = await mp.evaluate(() => {
+      const li = Array.from(document.querySelectorAll('#items .item')).find((x) => x.querySelector(':scope > .acts .mark-menu'));
+      return li ? li.dataset.key : null;
+    });
+    const markBefore = markKey ? (await item(markKey)).status : null;
+    if (markKey) {
+      await mp.click('#items .item[data-key="' + markKey + '"] > .acts .mark-menu > summary');
+      await sleep(250);
+      await mp.click('#items .item[data-key="' + markKey + '"] > .acts .mark-menu .menu-body button');
+    }
+    const marked = await until(async () => { const it = markKey && (await item(markKey)); return it && it.status === 'carted' ? it : null; }, 4000);
+    const markToast = await mp.evaluate(() => Array.from(document.querySelectorAll('#toasts .toast')).map((t) => t.textContent).join(' | '));
+    check('the ▾ beside Add to cart marks an item as in your cart without RepHop adding anything', !!marked && markBefore === 'saved' && /Nothing was added/.test(markToast), { markKey, markBefore, markToast });
+    await mp.evaluate(() => { const b = Array.from(document.querySelectorAll('#toasts .toast button')).find((x) => x.textContent === 'Undo'); if (b) b.click(); });
+    const unmarked = await until(async () => { const it = markKey && (await item(markKey)); return it && it.status === 'saved' ? it : null; }, 4000);
+    check('and Undo puts it back as it was', !!unmarked, markKey);
+    await mp.close();
+    const bulk = await sw.evaluate(async () => {
+      await mutateItems((items) => {
+        const it = items['taobao:1036519107016'];
+        it.status = 'saved';
+        it.more.forEach((p) => (p.status = 'saved'));
+        return true;
+      });
+      const r = await handlers.mark({ keys: ['taobao:1036519107016'], status: 'carted', all: true });
+      const a = (await chrome.storage.local.get('items')).items['taobao:1036519107016'];
+      const after = [a.status, a.more.map((p) => p.status).join()];
+      await handlers.mark({ restore: r.before });
+      const b = (await chrome.storage.local.get('items')).items['taobao:1036519107016'];
+      return { count: r.count, after, back: [b.status, b.more.map((p) => p.status).join()] };
+    });
+    check('"Mark in cart" on a selection marks every pick of each item, and Undo puts each one back', bulk.count === 2 && bulk.after.join('/') === 'carted/carted' && bulk.back.join('/') === 'saved/saved', bulk);
+
+    // Keeping the list in step (on by default): opening the cart is enough
+    await sw.evaluate(() => handlers.settings({ patch: { cartSync: true } }));
+    await sw.evaluate(() => mutateItems((items) => {
+      for (const it of Object.values(items)) {
+        if (it.status === 'carted') it.status = 'saved';
+        for (const p of it.more || []) if (p.status === 'carted') p.status = 'saved';
+      }
+      const f = items['taobao:1036519107016'];
+      f.status = 'carted';
+      f.qty = 1;
+      f.more[0].status = 'carted';
+      return true;
+    }));
+    await sleep(300);
+    const wrap = (lines) => '<!doctype html><html><head><title>Shopping Cart - Superbuy</title></head><body><div class="shopping-cart shopping-cart-container"><div class="shopping-cart-content"><div class="shopping-cart-inner"><div class="cart-shop-item-container shop-item"><div class="shop-item-info"><a class="shop-name" href="#">Fixture shop</a></div><div class="shop-goods">' + lines + '</div></div></div></div></div></body></html>';
+    const sp = await fixturePage(cartUrl, [[cartUrl, wrap(cartLine(buy(fleece), 'Lambfleece set', 'size:M Color:Navy shirt ', '300.00', 2) + cartLine(buy('https://weidian.com/item.html?itemId=7237185689&vc_cps_track=1459920903_0_0'), 'Fixture tee', 'Color:Black size:L ', '128.00', 1))], ['https://img.alicdn.com/', '']]);
+    const spw = await world(sp);
+    const synced = await until(async () => { const it = await item('taobao:1036519107016'); return it && it.qty === 2 ? it : null; }, 12000);
+    const staleAsk = await until(() => spw(() => Array.from(ui().querySelectorAll('.toast span')).map((x) => x.textContent).find((x) => /cart any more/.test(x)) || null), 8000);
+    check('with "Keep the list in step" on, opening the cart is enough: the list follows it (the shirt went up to 2) and RepHop asks about what has left it (the trousers)', !!synced && /Lambfleece set \(M · Navy trousers\)/.test(staleAsk || ''), { qty: synced && synced.qty, staleAsk });
+    if (staleAsk) await clickToast(sp, spw, 'Yes, bought', 'cart any more');
+    const boughtNow = await until(async () => { const it = await item('taobao:1036519107016'); return it && it.more[0].status === 'bought' ? it : null; }, 5000);
+    check('"Yes, bought" marks what left the cart as bought; what is still in it stays In cart', !!boughtNow && boughtNow.status === 'carted', boughtNow && [boughtNow.status, boughtNow.more[0].status]);
+    await sp.close();
+
+    // Another agent's cart, never seen before: each product link that sits next to a quantity box is a line
+    const gUrl = 'https://cnfans.com/shopping-cart';
+    const gRow = (id, title, sku, qty) => '<tr class="cart-row"><td><a href="https://cnfans.com/product?id=' + id + '&amp;platform=WEIDIAN"><img src="https://img.alicdn.com/g.jpg"></a></td><td><a href="https://cnfans.com/product?id=' + id + '&amp;platform=WEIDIAN">' + title + '</a><div class="sku-info">' + sku + '</div></td><td class="price">CN ￥99.00</td>' +
+      '<td><div class="el-input-number"><span class="el-input-number__decrease">-</span><div class="el-input"><input type="text" class="el-input__inner" value="' + qty + '"></div><span class="el-input-number__increase">+</span></div></td></tr>';
+    const gPage = '<!doctype html><html><head><title>Cart - CNFans</title></head><body><table class="cart"><tbody>' + gRow('7451935178', 'Embroidered shorts', 'Color: 816 black; Size: M', 1) + gRow('7451935179', 'Two-piece set', 'Color: Grey top; Size: L', 1) + gRow('7451935179', 'Two-piece set', 'Color: Grey bottoms; Size: L', 2) +
+      '</tbody></table><section class="recommend"><h3>You may also like</h3><a href="https://cnfans.com/product?id=7451935170&amp;platform=WEIDIAN">Puffer</a></section></body></html>';
+    const gp = await fixturePage(gUrl, [[gUrl, gPage], ['https://img.alicdn.com/', '']]);
+    const gsets = await until(async () => { const a = await item('weidian:7451935178'); const b = await item('weidian:7451935179'); return a && b && b.more && b.more.length ? [a, b] : null; }, 15000);
+    const rec = await item('weidian:7451935170');
+    check('another agent\'s cart is read too: each line with its choices and quantity, two lines of one listing as two picks, a "you may also like" link left alone', !!gsets && gsets[0].status === 'carted' && opts(gsets[0].options) === 'Color=816 black, Size=M' && opts(gsets[1].options) === 'Color=Grey top, Size=L' && gsets[1].more.length === 1 && gsets[1].more[0].qty === 2 && opts(gsets[1].more[0].options) === 'Color=Grey bottoms, Size=L' && gsets[1].price === 99 && !rec, gsets && gsets.map((x) => ({ s: x.status, o: x.options, more: x.more, price: x.price })));
+    await gp.close();
   }
 
   // ============================== the list restarts a RepHop that Chrome kept from before an update

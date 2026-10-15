@@ -2,7 +2,7 @@
 
 RepHop is a browser extension that opens product links at a shopping agent, keeps a list of the ones you save, and can add them to your cart at that agent.
 
-Last updated: 14 October 2026.
+Last updated: 15 October 2026.
 
 ## What is collected
 
@@ -30,14 +30,15 @@ If you turn on **Sync**, a shortened copy of your list is stored in your browser
 | `*.yupoo.com` | You hover, open or save a Yupoo album | Find the buy link, title and cover picture |
 | `si.geilicdn.com`, `photo.yupoo.com` | A thumbnail is shown | Product pictures |
 | `m.tb.cn`, `qr.1688.com`, `ikako.vip` | You open or save one of these short links | Follow it to the product |
-| `reddit.com` | You press "Save all" on a post | Read that thread's comments |
+| `reddit.com` | You press "Save all" on a post; you open a gallery post | Read that thread's comments; the gallery's photos, their captions and links, and the poster's links |
+| `preview.redd.it`, `si.geilicdn.com` | You press "Save from this photo" on a gallery post | The post's photos and the linked products' pictures, compared on your computer to suggest which item is in a photo |
 | `docs.google.com` | You press a "Grab links" button on a spreadsheet | Read that sheet's links |
 | `open.er-api.com` | Twice a day | Yuan exchange rate |
 | The relay named in a live haul's invite, or in your settings | Only while you are in a live group haul | Pass encrypted lists and statuses between the people in that haul |
 
-These requests carry no identifier added by RepHop. Lookups the extension makes itself (Weidian's item API and item pages, Yupoo album pages, the shorteners and the rate service) are sent without your cookies. Pictures load the way any image on a web page does. Requests to Reddit and Google Sheets are made by the page you are on, as you.
+These requests carry no identifier added by RepHop. Lookups the extension makes itself (Weidian's item API and item pages, Yupoo album pages, the shorteners and the rate service) are sent without your cookies. Pictures load the way any image on a web page does. To suggest which item a gallery photo shows, RepHop compares the pictures in your browser with a small image model that comes with it; no picture or result is sent anywhere. Requests to Reddit and Google Sheets are made by the page you are on, as you.
 
-When you open a listing, your browser loads the shopping agent's site exactly as if you had pasted the link there yourself. "Add to cart for me" presses the same buttons on that page that you would; RepHop sends nothing to the agent on its own, and never starts a payment.
+When you open a listing, your browser loads the shopping agent's site exactly as if you had pasted the link there yourself. "Add to cart for me" presses the same buttons on that page that you would; RepHop sends nothing to the agent on its own, and never starts a payment. When you open your cart at an agent (or press "Copy cart to RepHop"), RepHop reads the lines the cart page shows (each listing's link, name, picture, the choices, quantity and price) and saves them in your list in your browser. It changes nothing in your cart and sends nothing anywhere; turn it off under Settings → Keep the list in step with your agent's cart.
 
 ## Sharing a list
 

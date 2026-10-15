@@ -64,7 +64,7 @@
         <div class="pick-grid" id="pick-grid"></div>
       </div>
 
-      <div class="quick">
+      <div class="quick" hidden>
         <label class="switch" title="When this is on, clicking a product link on Reddit opens the listing at your agent instead of the original site.">
           <input type="checkbox" id="q-hijack"><span class="track"></span><span>Click a link →</span>
         </label>
@@ -97,45 +97,53 @@
         <button type="button" id="queue-stop">End</button>
       </div>
 
-      <div class="row">
-        <input type="search" id="search" placeholder="Search your finds" aria-label="Search your finds">
-        <select id="sort" aria-label="Sort">
-          <option value="new">Newest</option>
-          <option value="old">Oldest</option>
-          <option value="cheap">Price: low to high</option>
-          <option value="pricey">Price: high to low</option>
-          <option value="name">Name</option>
-          <option value="hot">Most seen</option>
-        </select>
+      <div class="toolbar">
+        <label class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input type="search" id="search" placeholder="Search your finds" aria-label="Search your finds"></label>
+        <details class="menu" id="filters">
+          <summary title="Sort and filter the list"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>Filter</span><b id="filter-count" hidden></b></summary>
+          <div class="menu-body filters-body">
+            <label><span>Sort by</span>
+              <select id="sort" aria-label="Sort">
+                <option value="new">Newest</option>
+                <option value="old">Oldest</option>
+                <option value="cheap">Price: low to high</option>
+                <option value="pricey">Price: high to low</option>
+                <option value="name">Name</option>
+                <option value="hot">Most seen</option>
+              </select>
+            </label>
+            <label><span>Status</span>
+              <select id="f-status" aria-label="Filter by status">
+                <option value="">Any status</option>
+                <option value="unviewed">Not viewed yet</option>
+                <option value="saved">Not in cart</option>
+                <option value="carted">In cart</option>
+                <option value="bought">Bought</option>
+                <option value="problem">Sold out or removed</option>
+                <option value="nolink">Yupoo only (no buy link)</option>
+                <option value="noprice">No price</option>
+              </select>
+            </label>
+            <label id="f-tag-row"><span>Tag</span><select id="f-tag" aria-label="Filter by tag"><option value="">Any tag</option></select></label>
+            <label id="f-seller-row"><span>Seller</span><select id="f-seller" aria-label="Filter by seller"><option value="">Any seller</option></select></label>
+            <button type="button" id="filters-clear" class="link">Clear filters</button>
+          </div>
+        </details>
       </div>
 
       <div class="folders" id="folders" role="tablist" aria-label="Folders"></div>
 
-      <div class="row filters">
-        <select id="f-status" aria-label="Filter by status">
-          <option value="">Any status</option>
-          <option value="unviewed">Not viewed yet</option>
-          <option value="saved">Not in cart</option>
-          <option value="carted">In cart</option>
-          <option value="bought">Bought</option>
-          <option value="problem">Sold out or removed</option>
-          <option value="nolink">Yupoo only (no buy link)</option>
-          <option value="noprice">No price</option>
-        </select>
-        <select id="f-tag" aria-label="Filter by tag"><option value="">Any tag</option></select>
-        <select id="f-seller" aria-label="Filter by seller"><option value="">Any seller</option></select>
-      </div>
-
       <div class="summary">
         <div class="totals"><strong id="count"></strong><span id="total"></span></div>
-        <span class="grow"></span>
-        <button type="button" id="select-all" title="Select everything shown, then move, tag, delete or add it to your cart">Select all</button>
-        <button type="button" id="start-queue" class="primary" title="Open these one at a time in a single tab, with Next/Previous buttons on the page">Go through</button>
+        <div class="sum-acts">
+        <button type="button" id="select-all" class="ghost" title="Select everything shown, then move, tag, delete or add it to your cart">Select all</button>
+        <button type="button" id="start-queue" title="Open these one at a time in a single tab, with Next/Previous buttons on the page">Go through</button>
         <details class="menu" id="more">
           <summary>More</summary>
           <div class="menu-body">
             <div class="menu-scope" id="scope"></div>
             <button type="button" data-do="cart">Add these to cart</button>
+            <button type="button" data-do="mark">Mark these as in my cart</button>
             <button type="button" data-do="share">Share for a group haul</button>
             <button type="button" data-do="open-all">Open all in tabs</button>
             <button type="button" data-do="check">Check availability</button>
@@ -148,32 +156,34 @@
             <button type="button" data-do="delete" class="danger">Delete these…</button>
           </div>
         </details>
+        </div>
       </div>
 
       <div class="bulk" id="bulk" hidden>
-        <strong id="bulk-count"></strong>
-        <select id="bulk-move" aria-label="Move selected to folder"></select>
-        <button type="button" id="bulk-tag">Tag</button>
-        <button type="button" id="bulk-cart" class="primary" title="Add each selected item to your cart at your agent, one after the other">Add to cart</button>
-        <button type="button" id="bulk-delete" class="danger" title="Delete the selected items">Delete</button>
-        <button type="button" id="bulk-clear" title="Clear the selection">Clear</button>
+        <div class="bulk-top"><strong id="bulk-count"></strong><span class="grow"></span><button type="button" id="bulk-delete" class="ghost danger" title="Delete the selected items">Delete</button><button type="button" id="bulk-clear" class="ghost" title="Clear the selection">Clear</button></div>
+        <div class="bulk-acts">
+          <button type="button" id="bulk-cart" class="primary" title="Add each selected item to your cart at your agent, one after the other">Add to cart</button>
+          <button type="button" id="bulk-mark" title="Already added them yourself? Mark the selected items as in your cart, without RepHop adding anything">Mark in cart</button>
+          <select id="bulk-move" aria-label="Move selected to folder"></select>
+          <button type="button" id="bulk-tag">Tag</button>
+        </div>
       </div>
 
       <ul id="items" class="items"></ul>
       <button type="button" id="show-more" class="wide" hidden>Show more</button>
 
       <div id="empty" class="empty" hidden>
-        <h2>Nothing saved yet</h2>
-        <p>Open a Reddit post with Weidian, Taobao, 1688 or Yupoo links. Each link gets a small button:</p>
-        <ul>
-          <li><span class="demo-pill"><b>⚡ Open</b><i>＋</i></span> Left side opens the listing at your agent. <b>＋</b> saves it here.</li>
-          <li>Or hover a link and press <kbd>S</kbd> to open or <kbd>A</kbd> to save.</li>
-          <li><kbd>Alt</kbd> + click a link saves it without leaving the page.</li>
-        </ul>
-        <p><button type="button" class="link" data-goto="add">Paste links by hand</button> · <button type="button" class="link" data-goto="help">See everything it does</button></p>
+        <div class="art" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10a1 1 0 0 1 1 1v17l-6-4-6 4V4a1 1 0 0 1 1-1Z"/></svg></div>
+        <h2>Your list is empty</h2>
+        <p>Save finds from Reddit with the <span class="demo-pill"><b><svg width="9" height="11" viewBox="0 0 12 16" aria-hidden="true"><path d="M7 0 0 9h5l-1 7 7-9H6l1-7Z" fill="currentColor"/></svg><span class="ag-short">SB</span></b><i>+</i></span> button RepHop puts next to every product link, or bring in a haul you already have.</p>
+        <div class="empty-acts">
+          <button type="button" class="primary" id="empty-cart">Import my Superbuy cart</button>
+          <button type="button" data-goto="add">Paste links</button>
+        </div>
+        <p class="small"><button type="button" class="link quiet" data-goto="help">See everything RepHop does</button></p>
       </div>
       <div id="no-match" class="empty" hidden>
-        <p>Nothing matches these filters.</p>
+        <p id="no-match-text">Nothing matches these filters.</p>
         <p><button type="button" class="link" id="clear-filters">Clear filters</button></p>
       </div>
     </section>
@@ -191,12 +201,15 @@
       <hr>
       <button type="button" id="add-tab" class="wide">Save the page in the current tab</button>
       <p class="hint">Works when the tab is a product page: Weidian, Taobao, 1688, a Yupoo album, or a listing on one of the built-in agents.</p>
+      <hr>
+      <button type="button" id="add-cart" class="wide">Copy my Superbuy cart into the list</button>
+      <p class="hint">Opens your Superbuy cart and adds everything in it, with the colours, sizes and quantities you picked there, marked In cart. You need to be signed in to Superbuy. On the cart page itself, the same button is in RepHop’s bar at the bottom left.</p>
     </section>
 
     <!-- ============================== GROUP ============================== -->
     <section id="view-group" hidden>
       <h2>Group haul</h2>
-      <p class="hint">One person orders for everyone, so shipping is paid once. Friends send their list as a code; the person ordering adds the codes here, sees what everyone picked, puts it all in one cart and sees what each person owes.</p>
+      <p class="hint">One person orders for everyone, so shipping is paid once. Friends share their list as a code; you add the codes here and see what everyone owes.</p>
       <div class="row wrap">
         <button type="button" id="g-share" class="primary">Share my list</button>
         <button type="button" id="g-add">Add a friend’s list</button>
@@ -232,10 +245,10 @@
       <div id="live" class="box">
         <h3>Live haul</h3>
         <div id="live-none">
-          <p class="hint">In a live haul everyone’s list keeps itself up to date: change a colour and the person ordering sees it a moment later. Friends join with an invite and are let in one by one. Lists are encrypted before they leave your browser.</p>
+          <details class="how"><summary>How a live haul works</summary><p class="hint">Everyone’s list keeps itself up to date: change a colour and the person ordering sees it a moment later. Friends join with an invite and are let in one by one. Lists are encrypted before they leave your browser.</p></details>
           <label class="field"><span>Your name</span><input type="text" id="live-name" maxlength="30" placeholder="What your friends call you"></label>
           <div class="row wrap">
-            <button type="button" id="live-start" class="primary">Start a live haul</button>
+            <button type="button" id="live-start">Start a live haul</button>
             <button type="button" id="live-join-open">Join with an invite</button>
           </div>
           <div id="live-join-box" hidden>
@@ -280,9 +293,9 @@
         <div class="g-opts">
           <label><span>My own items</span><select id="g-mine"></select></label>
           <label><span>Shipping and fees to split (<span id="g-cur"></span>)</span><input type="number" id="g-extra" min="0" step="0.01" placeholder="0.00"></label>
-          <label><span>Split them</span><select id="g-split"><option value="even">Evenly</option><option value="cost">By item cost</option></select></label>
+          <label><span>Split them</span><select id="g-split"><option value="even">Evenly</option><option value="cost">By item cost</option><option value="weight">By weight (estimated)</option></select></label>
         </div>
-        <table class="g-table">
+        <table class="g-table" id="g-table">
           <thead><tr><th>Who</th><th>Items cost</th><th>Share</th><th>Owes</th></tr></thead>
           <tbody id="g-rows"></tbody>
         </table>
@@ -372,6 +385,9 @@
       <div id="custom-qc" hidden>
         <label class="field col"><span>QC link template</span><input type="text" data-setting="qcTemplate" placeholder="https://example.com/qc?url={url}"></label>
       </div>
+      <label class="check"><input type="checkbox" data-setting="shoeBoxes"><span>Count shoes with their boxes in the weight estimate <small>Untick if your agent throws the boxes away (about 0.4 kg less a pair).</small></span></label>
+      <label class="check"><input type="checkbox" data-setting="cartSync"><span>Keep the list in step with your agent’s cart <small>Each time you open your cart there, RepHop copies in what is new or changed, and asks about anything marked In cart that has left it.</small></span></label>
+      <label class="check"><input type="checkbox" data-setting="pressMyself"><span>Let me press Add To Cart myself <small>RepHop picks the colour, size and quantity, then waits for your click. Try this if your agent keeps asking you to prove you are not a robot.</small></span></label>
       <label class="check"><input type="checkbox" data-setting="autoAdvance"><span>In a queue, move to the next item after “Add to Cart” <small>Superbuy only. You get three seconds to cancel.</small></span></label>
 
       <h3>Folders</h3>
@@ -384,7 +400,7 @@
       <div class="row"><input type="text" id="seller-new" maxlength="60" placeholder="Yupoo username" aria-label="Yupoo username"><button type="button" id="seller-add">Add</button></div>
 
       <h2>Add to cart</h2>
-      <p class="hint">Every item in your list has an <b>Add to cart</b> button; select several to add them one after the other. RepHop opens the listing at your agent and, on Superbuy and AllChinaBuy, sets the options and presses Add To Cart. It chooses in this order: the colour and size you set on the item (the drop-downs on its card), what you picked on that listing before, then your sizes below. It only picks what it has a reason to pick: if a choice is sold out, missing, or it has nothing to go on, it presses nothing, tells you on the page what it needs, and carries on once you have added the item. It never ticks the site’s agreement box for you and never pays for anything. On other agents it opens each listing and you do the choosing. Each step was checked on a live Superbuy listing in October 2026; AllChinaBuy uses the same page but was not checked. Watch the first item go in.</p>
+      <details class="how"><summary>How Add to cart works</summary><p class="hint">Every item in your list has an <b>Add to cart</b> button; select several to add them one after the other. RepHop opens the listing at your agent and, on Superbuy and AllChinaBuy, sets the options and presses Add To Cart. It chooses in this order: the colour and size you set on the item (the drop-downs on its card), what you picked on that listing before, then your sizes below. It only picks what it has a reason to pick: if a choice is sold out, missing, or it has nothing to go on, it presses nothing, tells you on the page what it needs, and carries on once you have added the item. It never ticks the site’s agreement box for you and never pays for anything. On other agents it opens each listing and you do the choosing. Each step was checked on a live Superbuy listing in October 2026; AllChinaBuy uses the same page but was not checked. Watch the first item go in.</p></details>
       <h3>My sizes</h3>
       <div class="sizes" id="sizes">
         <label><span>Shoes</span><input type="text" data-size="shoes" maxlength="30" placeholder="43, 9.5"></label>

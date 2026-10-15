@@ -33,6 +33,13 @@
   let pageItem = null;
   let lastHref = location.href;
   let fabCollapsed = false;
+  let cartCount = 0; // lines on the agent's cart page RepHop can read
+  let cartWanted = false; // the list opened this cart to copy it in
+  let cartCopied = null; // the cart as last copied, so the bar can say so
+  let cartTried = null; // the cart as last sent (copied or not), so a failure is not retried every second
+  let cartNow = ''; // the cart as it is on the page
+  let cartBusy = false;
+  let cartTimer = null;
 
   const infos = new WeakMap(); // element -> link info (or null)
   const hrefSeen = new WeakMap(); // anchor -> the href we last classified
@@ -85,6 +92,8 @@
   // feed puts a full-card link over each post, so the button has to be positioned to sit above it.
   const PILL_HOST_STYLE = 'all: initial !important; display: inline-flex !important; vertical-align: middle !important; margin: 0 2px 0 6px !important; position: relative !important; z-index: 1 !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important;';
 
+  const PHOTO_PILL_STYLE = 'all: initial !important; position: absolute !important; top: 12px !important; left: 12px !important; z-index: 30 !important; display: inline-flex !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important;';
+
   const PILL_CSS = `
     .wrap { position: relative; display: inline-flex; }
     .pill { display: inline-flex; align-items: stretch; height: 20px; border-radius: 10px; overflow: hidden;
@@ -114,21 +123,27 @@
     button { all: unset; box-sizing: border-box; cursor: pointer; font: inherit; color: inherit; }
     button:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 2px; }
 
-    .toasts { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; width: max-content; max-width: min(560px, 92vw); }
+    .toasts { position: absolute; left: 16px; bottom: 68px; display: flex; flex-direction: column; gap: 8px; align-items: stretch; width: min(400px, calc(100vw - 32px)); }
     .toast { pointer-events: auto; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; background: #1c2130; border: 1px solid rgba(255,255,255,.12);
       box-shadow: 0 8px 28px rgba(0,0,0,.4); animation: rise .16s ease-out; max-width: 100%; }
     .toast::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex: none; }
     .toast.error::before { background: #f87171; }
     .toast.warn::before { background: #fbbf24; }
     .toast.need { border-color: #ff6b35; box-shadow: 0 0 0 2px rgba(255,107,53,.35), 0 10px 30px rgba(0,0,0,.45); font-weight: 600; }
-    .toast span { overflow-wrap: anywhere; }
-    .toast button { color: #7dd3fc; font-weight: 600; flex: none; }
+    .toast span { overflow-wrap: anywhere; flex: 1 1 0; min-width: 0; }
+    .toast { flex-wrap: wrap; }
+    .toast .acts { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding-left: 20px; }
+    .toast .acts button { color: #c7cdd9; }
+    .toast .acts button:hover { color: #f4f5f7; }
+    .toast .acts button.main { background: #ff6b35; color: #fff; padding: 4px 10px; border-radius: 7px; }
+    .toast .acts button.main:hover { filter: brightness(1.1); }
+    .toast button { color: #ff8a5c; font-weight: 600; flex: none; }
     @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 
     .card { position: absolute; width: 300px; display: none; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: #1c2130; border: 1px solid rgba(255,255,255,.14); box-shadow: 0 12px 36px rgba(0,0,0,.45); }
     .card.on { display: flex; }
     .card .top { display: flex; gap: 10px; }
-    .card .pic { width: 72px; height: 72px; border-radius: 8px; background: #2a3142; flex: none; overflow: hidden; }
+    .card .pic { width: 72px; height: 72px; border-radius: 8px; background: #2a3142; flex: none; overflow: hidden; display: grid; place-items: center; color: #9aa3b5; font-weight: 700; font-size: 13px; }
     .card .pic img { width: 100%; height: 100%; display: block; object-fit: cover; }
     .card .body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
     .card .title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
@@ -159,6 +174,32 @@
     .bar.collapsed > :not(.logo) { display: none; }
     .bar.busy { opacity: .7; pointer-events: none; }
 
+    .picks { position: absolute; left: 16px; bottom: 70px; width: min(350px, calc(100vw - 32px)); max-height: calc(100vh - 110px); overflow: auto; pointer-events: auto; padding: 12px; border-radius: 14px;
+      background: #1c2130; border: 1px solid rgba(255,255,255,.14); box-shadow: 0 12px 34px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 8px; }
+    .picks[hidden] { display: none; }
+    .picks .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .picks .head b { font-size: 13.5px; }
+    .picks .head button { color: #9aa3b5; font-size: 18px; line-height: 1; padding: 0 4px; }
+    .picks .head button:hover { color: #f4f5f7; }
+    .picks .row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; min-height: 48px; border-radius: 10px; background: #252c3c; }
+    .picks .pic { width: 34px; height: 34px; flex: none; border-radius: 7px; object-fit: cover; background: #2c3447; }
+    .picks .what { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+    .picks .what small { color: #9aa3b5; font-weight: 500; margin-left: 4px; }
+    .picks .st { font-size: 11.5px; font-weight: 700; color: #9aa3b5; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+    .picks .st.in { color: #4ade80; }
+    .picks .row button, .picks .here button { padding: 6px 10px; border-radius: 9px; background: #2c3447; font-weight: 600; font-size: 12px; white-space: nowrap; text-align: center; }
+    .picks .row button:hover, .picks .here button:hover { background: #374159; }
+    .picks button.go { background: linear-gradient(135deg, #ff6b35, #f43f5e); }
+    .picks button.go:hover { filter: brightness(1.12); background: linear-gradient(135deg, #ff6b35, #f43f5e); }
+    .picks .here { border-top: 1px solid rgba(255,255,255,.1); padding-top: 9px; display: flex; flex-direction: column; gap: 7px; }
+    .picks .here .sel { color: #c7cdd9; font-size: 12.5px; }
+    .picks .here .sel b { color: #f4f5f7; }
+    .picks .here .btns { display: flex; gap: 6px; }
+    .picks .here .btns button { flex: 1; }
+    .picks .hint { color: #9aa3b5; font-size: 11.5px; }
+    .picks .row.best { box-shadow: inset 0 0 0 2px #ff6b35; }
+    .picks .what .tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 6px; background: rgba(255,107,53,.18); color: #ffb38f; font-size: 10.5px; font-weight: 700; }
+    .bar .count { font-size: 11px; font-weight: 700; color: #9aa3b5; }
     .chooser { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); width: min(340px, 92vw); pointer-events: auto; padding: 16px; border-radius: 14px;
       background: #1c2130; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); }
     .chooser[hidden] { display: none; }
@@ -193,11 +234,15 @@
         <button data-act="open" class="primary" hidden></button>
         <button data-act="save" hidden></button>
         <button data-act="qc" hidden>QC photos</button>
+        <button data-act="photo" hidden></button>
+        <button data-act="gpick" hidden></button>
         <button data-act="grab" hidden></button>
+        <button data-act="cart" hidden></button>
         <button data-act="graball" hidden title="Read every tab of this spreadsheet and save the product links">All tabs</button>
         <button data-act="clickable" hidden title="Open a plain version of this sheet where every link gets its own open and save buttons">Clickable view</button>
         <button data-act="panel" title="Open your RepHop list" aria-label="Open your RepHop list">${ICON.list}</button>
       </div>
+      <div class="picks" role="dialog" aria-label="What you want from this listing" hidden></div>
       <div class="chooser" role="dialog" aria-label="Choose your shopping agent" hidden>
         <h2>Which shopping agent do you use?</h2>
         <p>RepHop opens product links there. You can change it any time in the RepHop list.</p>
@@ -209,6 +254,7 @@
   const $bar = ui.querySelector('.bar');
   const $toasts = ui.querySelector('.toasts');
   const $chooser = ui.querySelector('.chooser');
+  const $picks = ui.querySelector('.picks');
   (document.documentElement || document.body).appendChild(uiHost);
 
   // ----------------------------------------------------- choosing an agent
@@ -290,15 +336,21 @@
       el.remove();
     };
     const list = !actions ? [] : Array.isArray(actions) ? actions : [actions];
+    const holder = list.length > 1 ? document.createElement('div') : el;
+    if (list.length > 1) {
+      holder.className = 'acts';
+      el.appendChild(holder);
+    }
     for (const action of list) {
       const b = document.createElement('button');
       b.type = 'button';
+      if (list.length > 1 && action === list[0]) b.className = 'main';
       b.textContent = action.label;
       b.addEventListener('click', () => {
         close();
         action.fn();
       });
-      el.appendChild(b);
+      holder.appendChild(b);
     }
     while ($toasts.children.length >= 3) $toasts.firstChild.remove();
     $toasts.appendChild(el);
@@ -348,7 +400,7 @@
   }
 
   function wantsPill(info) {
-    return info.mode === 'inline' && !info.noPill && settings.showPills;
+    return (info.mode === 'inline' || info.mode === 'photo') && !info.noPill && settings.showPills;
   }
 
   function decorateAnchor(a) {
@@ -369,13 +421,13 @@
 
   function attachPill(info) {
     if (info.pill && info.pill.isConnected) return;
-    const next = info.el.nextElementSibling;
+    const next = info.mode === 'photo' ? info.el.querySelector(':scope > [data-rh-pill]') : info.el.nextElementSibling;
     if (next && next.hasAttribute('data-rh-pill')) next.remove();
     const host = document.createElement('span');
     host.setAttribute('data-rh-ui', '');
     host.setAttribute('data-rh-pill', '');
     const root = host.attachShadow({ mode: 'closed' });
-    host.style.cssText = PILL_HOST_STYLE;
+    host.style.cssText = info.mode === 'photo' ? PHOTO_PILL_STYLE : PILL_HOST_STYLE;
     root.innerHTML = `<style>${PILL_CSS}</style><span class="wrap"><span class="pill"><button class="go" type="button">${ICON.bolt}<span></span></button><button class="save" type="button"></button></span><span class="n"></span></span>`;
     const stop = (ev) => ev.stopPropagation();
     for (const type of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'dblclick']) root.addEventListener(type, stop);
@@ -396,7 +448,8 @@
     info.pill = host;
     pillInfo.set(host, info);
     pillRoots.set(host, root);
-    info.el.insertAdjacentElement('afterend', host);
+    if (info.mode === 'photo') info.el.appendChild(host);
+    else info.el.insertAdjacentElement('afterend', host);
     paintPill(info);
   }
 
@@ -483,8 +536,269 @@
     if (root.nodeType === 1 && root.tagName === 'A') decorateAnchor(root);
     if (root.querySelectorAll) for (const a of root.querySelectorAll('a[href]')) decorateAnchor(a);
     scanText(root.nodeType === 9 ? root.body : root);
+    if (IS_REDDIT && root.querySelector && (root.tagName === 'GALLERY-CAROUSEL' || root.querySelector('gallery-carousel'))) decorateGallery();
     refreshStates();
     paintBar();
+  }
+
+  // ---------------------------------------------------------- gallery photos
+  // A Reddit gallery is a row of photos. Reddit keeps the photos' own links and captions in the post's data,
+  // not on the page, so on a post page RepHop reads that once, with the post's text and the poster's comments.
+  //  - A photo the poster put a product link on gets the same ⚡ | + button as a link.
+  //  - While any photo is on screen (in the post or full screen), the bar offers "Save from this photo": the
+  //    post's links with their pictures, the one that looks most like the photo first. RepHop compares the photo
+  //    with each product's own pictures on your computer (a small image model and the colours). It is a guess,
+  //    so the list always shows every link and you pick.
+  const galleries = new Map(); // post id -> Promise of { photos: [{ media, parsed, label, small }], links: [{ parsed, label }] }
+  const photoByMedia = new Map(); // media id -> info, for photos with a link of their own
+  const slideByMedia = new Map(); // media id -> the photo's place in the gallery
+  const matches = new Map(); // post id -> { state, done, total, info, sims }
+  const pickerInfos = new Map(); // key -> info, for the links listed in the picker
+  let galleryNow = null; // { postId, carousel, data }
+  let photoNow = null; // the photo on screen, when it has a link of its own
+  let slideNow = null; // { index, media } of the photo on screen
+  let pickerSlide = 0;
+  let picksMode = 'listing'; // what the list above the bar shows: this listing's picks, or a gallery photo's items
+  let photoTimer = null;
+
+  function galleryPhotos(postId) {
+    if (!galleries.has(postId)) {
+      galleries.set(postId, (async () => {
+        const empty = { photos: [], links: [] };
+        try {
+          const res = await fetch(location.origin + '/comments/' + postId + '.json?limit=200&depth=4&raw_json=1', { credentials: 'include', headers: { Accept: 'application/json' } });
+          if (!res.ok) return empty;
+          const data = await res.json();
+          const post = (((data[0] || {}).data || {}).children[0] || {}).data || {};
+          const meta = post.media_metadata || {};
+          const small = (id) => {
+            const m = meta[id] || {};
+            const list = Array.isArray(m.p) ? m.p : [];
+            const pick = list.find((x) => x && x.x >= 320) || list[list.length - 1] || m.s;
+            return pick && typeof pick.u === 'string' ? pick.u.replace(/&amp;/g, '&') : '';
+          };
+          const items = post.gallery_data && Array.isArray(post.gallery_data.items) ? post.gallery_data.items : [];
+          const photos = items.map((g) => {
+            const caption = typeof g.caption === 'string' ? g.caption : '';
+            const out = typeof g.outbound_url === 'string' ? L.parseLink(g.outbound_url) : null;
+            const hit = out ? null : L.extractLabeled(caption)[0];
+            const media = String(g.media_id || '');
+            return { media, parsed: out || (hit ? hit.parsed : null), label: L.cleanLabel(caption.replace(/https?:\/\/\S+/g, ' ')) || (hit && hit.label) || '', small: small(media) };
+          });
+          // The items the photos can show: the post's own links (its text, its photos), then the poster's comments.
+          const links = [];
+          const seen = new Set();
+          const add = (parsed, label) => {
+            if (!parsed || seen.has(parsed.key) || links.length >= 25) return;
+            seen.add(parsed.key);
+            links.push({ parsed, label: label || '' });
+          };
+          for (const h of L.extractLabeled(post.selftext || '')) add(h.parsed, h.label);
+          for (const p of photos) if (p.parsed) add(p.parsed, p.label);
+          const walk = (children) => {
+            for (const c of children || []) {
+              if (!c || c.kind !== 't1' || !c.data) continue;
+              if (c.data.author && c.data.author === post.author) for (const h of L.extractLabeled(c.data.body || '')) add(h.parsed, h.label);
+              if (c.data.replies && c.data.replies.data) walk(c.data.replies.data.children);
+            }
+          };
+          walk(data[1] && data[1].data && data[1].data.children);
+          return { photos, links };
+        } catch (_) {
+          return empty;
+        }
+      })());
+    }
+    return galleries.get(postId);
+  }
+
+  async function decorateGallery() {
+    const m = location.pathname.match(/\/comments\/([a-z0-9]+)/i);
+    if (!m) return;
+    const carousel = document.querySelector('gallery-carousel[post-id="t3_' + m[1] + '"]');
+    if (!carousel) return;
+    const data = await galleryPhotos(m[1]);
+    if (!alive || !data.photos.length) return;
+    galleryNow = { postId: m[1], carousel, data };
+    data.photos.forEach((p, i) => p.media && slideByMedia.set(p.media, i));
+    for (const li of carousel.querySelectorAll('li[slot^="page-"]')) {
+      const p = data.photos[(parseInt(li.getAttribute('slot').slice(5), 10) || 0) - 1];
+      if (!p || !p.parsed || infos.get(li)) continue;
+      const info = { el: li, parsed: p.parsed, key: p.parsed.key, url: p.parsed.url, orig: p.parsed.url, mode: 'photo', pill: null, label: p.label, media: p.media };
+      infos.set(li, info);
+      live.add(info);
+      if (p.media) photoByMedia.set(p.media, info);
+    }
+    refreshStates();
+    if (!photoTimer) photoTimer = setInterval(trackPhoto, 600);
+  }
+
+  /** The gallery photo that fills most of the screen (the full-screen viewer draws its own copy): { index, media }, or null. */
+  function photoOnScreen() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let best = null;
+    let most = vw * vh * 0.12;
+    const look = (root, depth) => {
+      for (const img of root.querySelectorAll('img')) {
+        const src = img.currentSrc || img.getAttribute('src') || '';
+        if (!src) continue;
+        let media = '';
+        for (const id of slideByMedia.keys()) {
+          if (src.includes(id)) {
+            media = id;
+            break;
+          }
+        }
+        if (!media) continue;
+        const r = img.getBoundingClientRect();
+        // A photo waiting beside the current one in the post's carousel is cut off by the carousel.
+        const box = img.closest('gallery-carousel');
+        const c = box ? box.getBoundingClientRect() : { left: 0, top: 0, right: vw, bottom: vh };
+        const w = Math.min(r.right, c.right, vw) - Math.max(r.left, c.left, 0);
+        const h = Math.min(r.bottom, c.bottom, vh) - Math.max(r.top, c.top, 0);
+        if (w > 0 && h > 0 && w * h > most && getComputedStyle(img).visibility !== 'hidden') {
+          most = w * h;
+          best = { index: slideByMedia.get(media), media };
+        }
+      }
+      if (depth < 4) for (const el of root.querySelectorAll('*')) if (el.shadowRoot) look(el.shadowRoot, depth + 1);
+    };
+    look(document.body, 4);
+    const viewer = document.querySelector('shreddit-media-lightbox');
+    if (viewer) look(viewer.shadowRoot || viewer, 1);
+    return best;
+  }
+
+  function trackPhoto() {
+    if (!alive) return void clearInterval(photoTimer);
+    if (document.hidden) return;
+    const next = photoOnScreen();
+    const changed = (next && next.media) !== (slideNow && slideNow.media);
+    slideNow = next;
+    photoNow = next ? photoByMedia.get(next.media) || null : null;
+    if (!changed) return;
+    paintBar();
+    if (!$picks.hidden && picksMode === 'gallery' && next) renderPicker();
+  }
+
+  /** Compare every photo of the gallery with every linked product's pictures, once per post. */
+  async function startMatch() {
+    const g = galleryNow;
+    if (!g || matches.has(g.postId)) return;
+    const mt = { state: 'loading', done: 0, total: 0, info: [], sims: null };
+    matches.set(g.postId, mt);
+    const again = () => !$picks.hidden && picksMode === 'gallery' && renderPicker();
+    try {
+      const info = await send({ type: 'photoInfo', urls: g.data.links.map((l) => l.parsed.url) });
+      mt.info = (info && info.list) || [];
+      again();
+      if (!self.RepMatch) await send({ type: 'loadMatcher' });
+      if (!self.RepMatch) throw new Error('no matcher');
+      const slides = g.data.photos.map((p) => p.small);
+      const pics = g.data.links.map((l, j) => (mt.info[j] && mt.info[j].pics) || []);
+      const all = Array.from(new Set(slides.concat(...pics).filter(Boolean)));
+      mt.total = all.length;
+      const feats = new Map();
+      for (let i = 0; i < all.length; i += 8) {
+        const batch = all.slice(i, i + 8);
+        const r = await send({ type: 'fetchPics', urls: batch });
+        for (let k = 0; k < batch.length; k++) {
+          const got = r && r.list && r.list[k];
+          feats.set(batch[k], got ? await self.RepMatch.features(got.b64, got.type) : null);
+          mt.done++;
+        }
+        again();
+      }
+      mt.sims = slides.map((u) => pics.map((list) => {
+        let best = null;
+        for (const p of list) {
+          const v = self.RepMatch.similarity(feats.get(u), feats.get(p));
+          if (v != null && (best == null || v > best)) best = v;
+        }
+        return best;
+      }));
+      mt.state = 'done';
+    } catch (_) {
+      mt.state = 'failed';
+    }
+    again();
+  }
+
+  function togglePicker() {
+    if (!$picks.hidden && picksMode === 'gallery') return closePicks();
+    if (!galleryNow) return;
+    picksMode = 'gallery';
+    pickerSlide = slideNow ? slideNow.index : pickerSlide;
+    for (const l of galleryNow.data.links) {
+      if (!pickerInfos.has(l.parsed.key)) pickerInfos.set(l.parsed.key, { el: galleryNow.carousel, parsed: l.parsed, key: l.parsed.key, url: l.parsed.url, orig: l.parsed.url, mode: 'pick', pill: null, label: l.label });
+    }
+    $picks.hidden = false;
+    renderPicker();
+    refreshStates();
+    paintBar();
+    startMatch();
+  }
+
+  /** The list above the bar for a gallery photo: the post's items, the likeliest first, each with Save. */
+  function renderPicker() {
+    const g = galleryNow;
+    if (!g) return void ($picks.hidden = true);
+    if (slideNow) pickerSlide = slideNow.index;
+    const links = g.data.links;
+    const total = g.data.photos.length;
+    const mt = matches.get(g.postId) || { state: 'loading', done: 0, total: 0, info: [] };
+    const rank = U.rankPhotoLinks(mt.sims ? mt.sims[pickerSlide] : null, pickerSlide, total, links.length);
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    };
+    const button = (cls, text, title, fn) => {
+      const b = el('button', cls, text);
+      b.type = 'button';
+      if (title) b.title = title;
+      b.addEventListener('click', (ev) => ev.isTrusted && fn());
+      return b;
+    };
+    $picks.replaceChildren();
+    const head = el('div', 'head');
+    head.append(el('b', '', 'Which item is in photo ' + (pickerSlide + 1) + ' of ' + total + '?'), button('', '×', 'Close', closePicks));
+    $picks.append(head);
+    if (!links.length) {
+      $picks.append(el('div', 'hint', 'This post has no product links, in its text or in the poster’s comments.'));
+      return;
+    }
+    const status = mt.state === 'loading' ? (mt.total ? 'Comparing the photo with each item’s pictures… ' + mt.done + ' of ' + mt.total : 'Looking up the items…')
+      : mt.state === 'failed' ? 'Could not compare the pictures, so these are in the post’s order.'
+      : !mt.sims || rank.byOrder ? 'In the post’s order. Pick the one in the photo.'
+      : rank.sure ? 'The closest match is first.' : 'Not sure which one: the closest looking first.';
+    $picks.append(el('div', 'hint', status));
+    rank.order.forEach((j, n) => {
+      const l = links[j];
+      const meta = mt.info[j] || {};
+      const info = pickerInfos.get(l.parsed.key);
+      const st = states[l.parsed.key] || {};
+      const row = el('div', 'row' + (n === 0 && (rank.sure || rank.byOrder) ? ' best' : ''));
+      if (meta.image) {
+        const pic = el('img', 'pic');
+        pic.alt = '';
+        pic.referrerPolicy = 'no-referrer';
+        pic.src = U.thumbUrl(meta.image, 80) || meta.image;
+        pic.addEventListener('error', () => pic.remove());
+        row.append(pic);
+      }
+      const what = el('div', 'what', l.label || meta.title || 'Item ' + (j + 1));
+      if (typeof meta.price === 'number') what.append(el('small', '', '¥' + meta.price));
+      if (n === 0 && mt.sims && !rank.byOrder) what.append(el('span', 'tag', rank.sure ? 'Looks like this photo' : 'Closest'));
+      row.append(what);
+      if (info) row.append(button(st.saved ? '' : 'go', st.saved ? '✓ Saved' : '+ Save', st.saved ? 'In your list. Click for options.' : 'Save this item to your list', () => toggleSave(info)));
+      $picks.append(row);
+    });
+    $picks.append(el('div', 'hint', 'RepHop compares the photo with each item’s own pictures, on your computer. It can be wrong: check the picture before you save.'));
+    const top = $bar.getBoundingClientRect().top;
+    if (top > 0) $picks.style.bottom = Math.round(window.innerHeight - top + 8) + 'px';
   }
 
   // ------------------------------------------------------ context & labels
@@ -588,11 +902,12 @@
       else live.delete(info);
     }
     if (pageItem) keys.add(pageItem.key);
+    for (const info of pickerInfos.values()) keys.add(info.key);
     if (!keys.size) return;
     // Asked in batches so a thread with thousands of links is covered in full.
     const next = {};
     for (const batch of U.chunkArray(Array.from(keys), 500)) {
-      const res = await send({ type: 'lookup', keys: batch });
+      const res = await send({ type: 'lookup', keys: batch, detail: IS_AGENT && pageItem ? pageItem.key : '' });
       if (!res) return;
       Object.assign(next, res);
     }
@@ -660,7 +975,7 @@
     const el = info.el;
     // Saving from the agent's own listing page also remembers the colour, size and so on picked there.
     const picked = info.mode === 'page' && IS_AGENT ? selectedOptions(true) : [];
-    const res = await send({ type: 'save', url: info.url, ctx: getContext(el), label: el ? contextLabel(el) : '', options: picked.length ? picked : undefined });
+    const res = await send({ type: 'save', url: info.url, ctx: getContext(el), label: info.label || (el ? contextLabel(el) : ''), options: picked.length ? picked : undefined });
     setBusy(info, false);
     if (!res) return;
     if (!res.ok) return void toast(res.message || REASONS[res.reason] || REASONS.error, 'error');
@@ -683,6 +998,120 @@
       { label: 'Remove', fn: () => removeSaved(info) },
     ]);
   }
+
+  // ------------------------------------------------ this listing's picks
+  // On an agent's listing that is in your list, the bar's "In cart" opens what you want from it: every pick with
+  // its colour, size and whether it is in the cart, Add to cart for the ones still to add, and a way to add
+  // what is selected on the page as another pick (the top and the trousers of a set).
+
+  const pickText = (p) => (p.options || []).map((o) => o.v).join(' · ') || 'No colour or size chosen yet';
+
+  function closePicks() {
+    $picks.hidden = true;
+    paintBar();
+  }
+
+  function togglePicks() {
+    if (!$picks.hidden) return closePicks();
+    picksMode = 'listing';
+    $picks.hidden = false;
+    renderPicks();
+    paintBar();
+  }
+
+  /** Add one pick to your cart: RepHop opens the listing afresh, sets its choices and presses Add To Cart. */
+  async function addPickToCart(itemKey, pick) {
+    const r = await send({ type: 'queue', op: 'start', keys: [itemKey], owner: [pick.id ? { v: pick.id } : null], auto: true });
+    if (!r || !r.ok) return void toast(r && r.reason === 'no-agent' ? 'Choose your shopping agent first.' : 'Could not start: is RepHop busy adding something else?', 'error');
+    closePicks();
+  }
+
+  /** What is selected on the page, saved as another pick; with `andCart`, added to the cart right away. */
+  async function addSelected(itemKey, andCart) {
+    const picked = selectedOptions(false);
+    if (!picked.length) return void toast('Choose a colour or size on the page first.', 'error');
+    const st = states[pageItem.key] || {};
+    const same = (st.picks || []).find((p) => p.options.length && picked.every((o) => p.options.some((x) => x.n === o.n && x.v === o.v)) && p.options.length === picked.length);
+    if (same && !andCart) return void toast('That one is already in your list: ' + pickText(same) + '.', 'ok');
+    if (same) return addPickToCart(itemKey, same);
+    const r = await send({ type: 'pick', op: 'add', key: itemKey, options: picked });
+    if (!r || !r.ok) return void toast('This item already has 10 picks.', 'error');
+    if (andCart) return addPickToCart(itemKey, { id: r.id });
+    toast('Added ' + picked.map((o) => o.v).join(' / ') + ' to your list.', 'ok');
+    refreshStates();
+  }
+
+  function renderPicks() {
+    const st = pageItem ? states[pageItem.key] || {} : {};
+    if (!pageItem || !st.saved || !Array.isArray(st.picks)) return void ($picks.hidden = true);
+    const itemKey = st.itemKey || pageItem.key;
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    };
+    const button = (cls, text, title, fn) => {
+      const b = el('button', cls, text);
+      b.type = 'button';
+      if (title) b.title = title;
+      b.addEventListener('click', (ev) => {
+        if (!ev.isTrusted) return;
+        fn();
+      });
+      return b;
+    };
+    $picks.replaceChildren();
+    const head = el('div', 'head');
+    head.append(el('b', '', 'From this listing'), button('', '×', 'Close', closePicks));
+    $picks.append(head);
+    for (const p of st.picks) {
+      const row = el('div', 'row');
+      if (p.img) {
+        const pic = el('img', 'pic');
+        pic.alt = '';
+        pic.referrerPolicy = 'no-referrer';
+        pic.src = U.thumbUrl(p.img, 80) || p.img;
+        pic.addEventListener('error', () => pic.remove());
+        row.append(pic);
+      }
+      const what = el('div', 'what', pickText(p));
+      if ((p.qty || 1) > 1) what.append(el('small', '', '× ' + p.qty));
+      row.append(what);
+      if (p.status === 'saved') row.append(button('', 'Add to cart', 'RepHop sets these choices on this page and presses Add To Cart', () => addPickToCart(itemKey, p)));
+      else {
+        const done = el('span', 'st in');
+        done.innerHTML = ICON.check;
+        done.append(p.status === 'bought' ? ' Bought' : ' In cart');
+        row.append(done);
+      }
+      $picks.append(row);
+    }
+    const here = el('div', 'here');
+    const picked = selectedOptions(false);
+    const sel = el('div', 'sel');
+    if (picked.length) {
+      sel.append('Selected on this page: ');
+      sel.append(el('b', '', picked.map((o) => o.v).join(' · ')));
+    } else sel.textContent = 'Choose a colour and size on the page to add another pick.';
+    here.append(sel);
+    const btns = el('div', 'btns');
+    btns.append(
+      button('', '+ Add to my list', 'Keep this colour and size as another pick from this listing', () => addSelected(itemKey, false)),
+      button('go', '+ Add to cart', 'Keep it as another pick and add it to your cart now', () => addSelected(itemKey, true)));
+    here.append(btns);
+    here.append(el('div', 'hint', 'Pressing this page’s own Add To Cart works too: RepHop adds what you chose here as a pick.'));
+    $picks.append(here);
+    // Sit just above the bar, however tall it is.
+    const top = $bar.getBoundingClientRect().top;
+    if (top > 0) $picks.style.bottom = Math.round(window.innerHeight - top + 8) + 'px';
+  }
+
+  // The list follows the choices you click on the page.
+  document.addEventListener('click', (ev) => {
+    if (!ev.isTrusted || $picks.hidden || !ev.target.closest || !ev.target.closest('ul.goods-options-tags > li')) return;
+    setTimeout(() => !$picks.hidden && renderPicks(), 150);
+  }, true);
 
   async function doQc(info) {
     let item = info.parsed;
@@ -815,6 +1244,7 @@
     if (ev.key === 'Escape') {
       setCardTarget(null);
       if (!$chooser.hidden) $chooser.hidden = true;
+      if (!$picks.hidden) closePicks();
       return;
     }
     if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat || typing(ev)) return;
@@ -847,13 +1277,19 @@
   function setThumb(box, url) {
     box.replaceChildren();
     const small = U.thumbUrl(url, 200);
-    if (!small) return;
+    if (!small) {
+      box.textContent = box.dataset.mono || '';
+      return;
+    }
     // Pictures added by the extension are not subject to the page's own image policy,
     // and the worker's header rule supplies the referer Yupoo insists on.
     const img = document.createElement('img');
     img.alt = '';
     img.referrerPolicy = 'no-referrer';
-    img.addEventListener('error', () => img.remove(), { once: true });
+    img.addEventListener('error', () => {
+      img.remove();
+      box.textContent = box.dataset.mono || '';
+    }, { once: true });
     img.src = small;
     box.appendChild(img);
   }
@@ -867,6 +1303,7 @@
     const keys = $card.querySelector('.keys');
     const pic = $card.querySelector('.pic');
     const platform = (L.PLATFORMS[(d && d.platform) || info.parsed.platform] || {}).label || 'Link';
+    pic.dataset.mono = (L.PLATFORMS[(d && d.platform) || info.parsed.platform] || {}).short || '';
     tags.textContent = '';
     price.textContent = '';
     const tag = (text, cls) => {
@@ -965,11 +1402,11 @@
   function paintBar() {
     const count = SCAN_PAGE ? inlineLinks().length : 0;
     const inQueue = queueHere();
-    const show = settings.showFab && alive && (pageItem || count > 0 || SHEETS_APP || inQueue || (IS_AGENT && backTo));
+    const show = settings.showFab && alive && (pageItem || count > 0 || SHEETS_APP || inQueue || (IS_AGENT && backTo) || photoNow || (slideNow && galleryNow) || (cartCount > 0 && isCart()));
     $bar.classList.toggle('on', !!show);
     if (!show) return;
     // On a product page the bar is how you save the item, so it is never folded away there.
-    $bar.classList.toggle('collapsed', fabCollapsed && !inQueue && !pageItem);
+    $bar.classList.toggle('collapsed', fabCollapsed && !inQueue && !pageItem && !(cartCount > 0 && isCart()));
     const btn = (act) => $bar.querySelector('[data-act="' + act + '"]');
     const st = pageItem ? states[pageItem.key] || {} : {};
 
@@ -990,7 +1427,7 @@
       if (queue.auto && runHere()) {
         const mine = auto.key === pageItem.key ? auto : {};
         const short = (t) => (t.length > 96 ? t.slice(0, 94).replace(/[\s,;.:]+\S*$/, '') + '…' : t);
-        q.textContent = mine.state === 'needs' ? at + ': ' + short(mine.need) : mine.state === 'done' ? at + ': added ✓' : 'Adding ' + (mine.who ? mine.who + '’s ' : '') + 'to cart, ' + at + '…';
+        q.textContent = mine.state === 'needs' ? at + ': ' + short(mine.need) : mine.state === 'done' ? at + ': added ✓' : mine.state === 'press' ? at + ': all set, press Add To Cart' : 'Adding ' + (mine.who ? mine.who + '’s ' : '') + 'to cart, ' + at + '…';
         q.title = mine.state === 'needs' ? mine.need : '';
         btn('qnext').textContent = last ? 'Skip and finish' : 'Skip ▶';
         btn('qnext').title = 'Leave this one out and go on';
@@ -1020,14 +1457,57 @@
     save.classList.toggle('primary', !st.saved && open.hidden);
     save.innerHTML = '';
     save.insertAdjacentHTML('afterbegin', st.saved ? ICON.check : ICON.plus);
-    save.append(st.saved ? (st.status === 'carted' ? ' In cart' : st.status === 'bought' ? ' Bought' : ' Saved to RepHop') : ' Save to RepHop');
-    save.title = st.saved ? 'In your RepHop list. Click for options.' : 'Save this item to your RepHop list' + (IS_AGENT ? ', with the options you have picked here' : '');
+    const picks = IS_AGENT && st.saved && Array.isArray(st.picks) ? st.picks : null;
+    const inCart = picks ? picks.filter((p) => p.status !== 'saved').length : 0;
+    if (picks && picks.length > 1) {
+      // Several picks from this listing: say how many are in the cart.
+      save.append(inCart === picks.length ? ' All ' + picks.length + ' in cart' : inCart ? ' ' + inCart + ' of ' + picks.length + ' in cart' : ' Saved to RepHop');
+      const c = document.createElement('span');
+      c.className = 'count';
+      c.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>';
+      save.append(c);
+    } else save.append(st.saved ? (st.status === 'carted' ? ' In cart' : st.status === 'bought' ? ' Bought' : ' Saved to RepHop') : ' Save to RepHop');
+    save.title = picks ? 'What you want from this listing, and what is in your cart. Click to see it, or to add another colour or size.'
+      : st.saved ? 'In your RepHop list. Click for options.' : 'Save this item to your RepHop list' + (IS_AGENT ? ', with the options you have picked here' : '');
+    save.setAttribute('aria-expanded', String(!!picks && !$picks.hidden));
+    if (!$picks.hidden) (picksMode === 'gallery' ? renderPicker() : renderPicks());
     btn('qc').hidden = !pageItem || pageItem.kind !== 'item';
     if (inQueue && queue.auto && runHere()) save.hidden = btn('qc').hidden = true;
+    const photo = btn('photo');
+    photo.hidden = !photoNow;
+    if (photoNow) {
+      const ps = states[photoNow.key] || {};
+      photo.innerHTML = '';
+      photo.insertAdjacentHTML('afterbegin', ps.saved ? ICON.check : ICON.plus);
+      photo.append(ps.saved ? ' This photo’s item is saved' : ' Save this photo’s item');
+      photo.classList.toggle('on-state', !!ps.saved);
+      photo.classList.toggle('primary', !ps.saved);
+      photo.title = (photoNow.label ? photoNow.label + ': ' : '') + 'the link the poster put on this photo';
+    }
+    const gpick = btn('gpick');
+    gpick.hidden = !(slideNow && galleryNow && galleryNow.data.links.length) || !!photoNow;
+    if (!gpick.hidden) {
+      gpick.innerHTML = '';
+      gpick.insertAdjacentHTML('afterbegin', ICON.plus);
+      gpick.append(' Save from this photo ▴');
+      gpick.title = 'Which of this post’s items is in this photo? RepHop shows them, the closest looking first.';
+      gpick.setAttribute('aria-expanded', String(!$picks.hidden && picksMode === 'gallery'));
+    }
     const grab = btn('grab');
     grab.hidden = !(count > 0 || SHEETS_APP);
     grab.textContent = SHEETS_APP ? 'Grab links from this tab' : 'Save all ' + count + ' link' + (count === 1 ? '' : 's');
     grab.title = SHEETS_APP ? 'Save the product links on the sheet tab you are looking at' : 'Save every product link on this page to your list';
+    const cart = btn('cart');
+    cart.hidden = !(cartCount > 0 && isCart());
+    if (!cart.hidden) {
+      const copied = cartCopied != null && cartCopied === cartNow;
+      cart.innerHTML = '';
+      cart.insertAdjacentHTML('afterbegin', copied ? ICON.check : ICON.plus);
+      cart.append(copied ? (settings.cartSync ? ' List in step with this cart' : ' Cart copied to RepHop') : ' Copy cart to RepHop (' + cartCount + ')');
+      cart.classList.toggle('on-state', !!copied);
+      cart.classList.toggle('primary', !copied);
+      cart.title = copied ? 'Everything here is in your RepHop list, marked In cart. Click to copy it again after a change.' : 'Add everything in this cart to your RepHop list, with the colours, sizes and quantities picked here, marked In cart';
+    }
     btn('graball').hidden = !SHEETS_APP;
     btn('clickable').hidden = !SHEETS_APP;
   }
@@ -1068,9 +1548,13 @@
     } else if (act === 'panel') send({ type: 'openPanel' });
     else if (act === 'back') send({ type: 'goBack' });
     else if (act === 'open' && own) doOpen(own, ev.ctrlKey || ev.metaKey ? 'background' : 'reuse');
+    else if (act === 'save' && own && IS_AGENT && (states[own.key] || {}).saved && Array.isArray((states[own.key] || {}).picks)) togglePicks();
     else if (act === 'save' && own) toggleSave(own);
     else if (act === 'qc' && own) doQc(own);
+    else if (act === 'photo' && photoNow) toggleSave(photoNow);
+    else if (act === 'gpick') togglePicker();
     else if (act === 'grab') grabAll(false);
+    else if (act === 'cart') copyCart(false);
     else if (act === 'graball') grabAll(true);
     else if (act === 'clickable') {
       const m = location.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
@@ -1080,6 +1564,195 @@
     else if (act === 'qprev') stepQueue(-1);
     else if (act === 'qstop') send({ type: 'queue', op: 'stop' }).then(afterQueueStep);
   });
+
+  // -------------------------------------------------- the agent's own cart
+  // Superbuy's cart page (AllChinaBuy is the same site) draws each line as section.cart-good-item-container >
+  // .goods-item, with a link to the listing it came from (/en/page/buy/?url=<the shop's link>), the choices made
+  // ("size:M Color:Navy shirt"), the price and the quantity. Lines whose details the site could not load
+  // (.load-failed) carry none of that. Other agents' carts have not been seen: there each product link that sits
+  // next to a quantity box is taken as one line, and RepHop never concludes that something has left the cart.
+  const SB_HOSTS = ['superbuy.com', 'allchinabuy.com'];
+
+  function isCart() {
+    if (!IS_AGENT || pageItem) return false;
+    if (L.hostMatches(HOST, SB_HOSTS)) return /\/page\/shoppingcart\/?$/.test(location.pathname);
+    return /cart/i.test(location.pathname + location.hash);
+  }
+
+  function cartAgentName() {
+    for (const a of Object.values(L.AGENTS)) {
+      const u = a.template && L.toUrl(a.template.replace(/\{[^}]+\}/g, 'x'));
+      if (u && L.hostMatches(HOST, [u.hostname.replace(/^www\./, '')])) return a.name;
+    }
+    return 'agent';
+  }
+
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+
+  function sbCartRows() {
+    const rows = [];
+    const present = [];
+    let unread = 0;
+    let loading = false;
+    for (const row of document.querySelectorAll('section.cart-good-item-container .goods-item')) {
+      if (row.querySelector('.skeleton-wrapper')) {
+        loading = true; // grey placeholders: still loading, or signed out
+        continue;
+      }
+      const a = row.querySelector('.goods-name a[href]') || row.querySelector('a[aria-label="goodsLink"][href]');
+      const parsed = a ? L.parseLink(a.href) : null;
+      if (!parsed || parsed.kind !== 'item' || row.classList.contains('load-failed')) {
+        unread++;
+        if (parsed && parsed.kind === 'item') present.push(parsed.key);
+        continue;
+      }
+      const txt = (sel) => {
+        const el = row.querySelector(sel);
+        return el ? clean(el.textContent) : '';
+      };
+      const input = row.querySelector('.count-operation input');
+      const img = row.querySelector('.goods-img-box img');
+      const src = img ? img.currentSrc || img.src || img.getAttribute('data-src') || '' : '';
+      rows.push({
+        url: a.href, key: parsed.key, title: txt('.goods-name .title'), sku: txt('.goods-name .color-type'), note: txt('.remark'),
+        qty: (input && parseInt(input.value, 10)) || 1, price: U.yuanFrom(txt('.unit-price-box')),
+        image: /good-item-default|^data:/.test(src) ? '' : src,
+      });
+    }
+    const empty = !!document.querySelector('.cart-empty-container .empty');
+    return { rows, unread, present, full: !loading && (rows.length > 0 || unread > 0 || empty), empty };
+  }
+
+  /** A quantity box: a small number in a number field, a spin button or something styled as a stepper. */
+  function qtyBox(i) {
+    if (/^(checkbox|radio|hidden|search|email|password)$/i.test(i.type) || !/^\d{1,3}$/.test(String(i.value).trim())) return false;
+    return i.type === 'number' || i.getAttribute('role') === 'spinbutton' || !!i.closest('[class*="number" i], [class*="stepper" i], [class*="quantity" i], [class*="qty" i], [class*="count" i]');
+  }
+
+  /** Any other agent's cart: a line is the largest box around a product link that holds one quantity box and no other product. */
+  function anyCartRows() {
+    const links = [];
+    for (const a of document.querySelectorAll('a[href]')) {
+      if (isOurs(a)) continue;
+      const p = L.parseLink(a.href);
+      if (p && p.kind === 'item') links.push({ a, p });
+    }
+    const boxes = Array.from(document.querySelectorAll('input')).filter(qtyBox);
+    const found = new Map();
+    for (const l of links) {
+      let row = null;
+      for (let el = l.a.parentElement; el && el !== document.body; el = el.parentElement) {
+        const inside = boxes.filter((b) => el.contains(b)).length;
+        if (inside > 1 || links.some((o) => o.p.key !== l.p.key && el.contains(o.a))) break;
+        if (inside === 1) row = el;
+      }
+      if (row && !found.has(row)) found.set(row, l);
+    }
+    const rows = [];
+    for (const [row, { a, p }] of found) {
+      const box = boxes.find((b) => row.contains(b));
+      const title = Array.from(row.querySelectorAll('a[href]')).filter((x) => (L.parseLink(x.href) || {}).key === p.key).map((x) => clean(x.textContent)).sort((x, y) => y.length - x.length)[0] || '';
+      const skuEl = Array.from(row.querySelectorAll('[class*="sku" i], [class*="spec" i], [class*="prop" i], [class*="attr" i], [class*="variant" i], [class*="option" i]'))
+        .find((el) => !el.contains(box) && !el.querySelector('a, input, button, select') && clean(el.textContent) && clean(el.textContent).length < 200);
+      const price = Array.from(row.querySelectorAll('[class*="price" i]')).map((el) => U.yuanFrom(clean(el.textContent))).find((v) => v != null);
+      const img = row.querySelector('img');
+      rows.push({ url: a.href, key: p.key, title, sku: skuEl ? clean(skuEl.textContent) : '', note: '', qty: parseInt(box.value, 10) || 1, price: price == null ? null : price, image: img ? img.currentSrc || img.src || '' : '' });
+    }
+    return { rows, unread: 0, present: [], full: false, empty: false };
+  }
+
+  function cartRows() {
+    return L.hostMatches(HOST, SB_HOSTS) ? sbCartRows() : anyCartRows();
+  }
+
+  const cartSig = (rows) => rows.map((r) => r.key + '|' + r.sku + '|' + r.qty).join('\n');
+
+  function shortTitle(t) {
+    t = String(t || '');
+    return t.length > 52 ? t.slice(0, 50).replace(/\s+\S*$/, '') + '…' : t;
+  }
+
+  /** Copy the cart into the list. `auto`: started by RepHop, so it only speaks when something changed; `loud`: the list asked. */
+  async function copyCart(auto, loud) {
+    const read = cartRows();
+    const sig = cartSig(read.rows);
+    if (!read.rows.length && !(read.full && read.empty)) {
+      if (!auto) toast('RepHop could not find any listing in this cart.', 'warn');
+      return;
+    }
+    cartBusy = true;
+    cartTried = sig;
+    const res = await send(Object.assign({ type: 'importCart', auto, since: BORN, site: HOST, cartUrl: location.href }, read));
+    cartBusy = false;
+    if (!res) {
+      if (!auto) toast('RepHop could not copy the cart. Try again.', 'warn');
+      return;
+    }
+    if (res.ok) cartCopied = sig;
+    paintBar();
+    if (res.message && (!auto || loud || res.changed)) toast(res.message, res.ok ? 'ok' : 'warn', [{ label: 'Open list', fn: () => send({ type: 'openPanel' }) }, { label: 'OK', fn: () => {} }], { sticky: !!loud });
+    if (res.stale && res.stale.length) askStale(res.stale, res.agent);
+  }
+
+  /** Things the list says are in the cart that the cart no longer holds: bought, or back to saved? Your call. */
+  function askStale(list, name) {
+    const n = list.length;
+    const what = n === 1 ? '“' + shortTitle(list[0].title) + '” is marked In cart in your list but is' : n + ' things marked In cart in your list are';
+    const names = n > 1 ? ' (' + list.slice(0, 3).map((x) => shortTitle(x.title)).join(', ') + (n > 3 ? '…' : '') + ')' : '';
+    const answer = (op) => send({ type: 'cartStale', op, list: list.map((x) => ({ key: x.key, pick: x.pick })) }).then(refreshStates);
+    toast(what + ' not in your ' + (name || 'agent') + ' cart any more' + names + '. Did you buy ' + (n === 1 ? 'it' : 'them') + '?', 'warn', [
+      { label: 'Yes, bought', fn: () => answer('bought') },
+      { label: 'Back to saved', fn: () => answer('saved') },
+      { label: 'Keep as is', fn: () => answer('leave') },
+    ], { sticky: true });
+  }
+
+  /**
+   * The cart is drawn after the page loads and changes as you edit it. The bar's count follows it and, with
+   * "Keep the list in step with your agent's cart" on (or when the list asked), the list is brought in step once
+   * the page has settled. Agents that are single-page apps reach their cart without a page load, so this watches
+   * every agent page (it does nothing until the address is a cart's).
+   */
+  function watchCart() {
+    if (!IS_AGENT || cartTimer) return;
+    let steady = 0;
+    let waited = 0;
+    let last = null;
+    cartTimer = setInterval(() => {
+      if (!alive) return;
+      if (!isCart()) {
+        if (cartCount) {
+          cartCount = 0;
+          paintBar();
+        }
+        return;
+      }
+      const read = cartRows();
+      const sig = cartSig(read.rows);
+      if (sig + read.empty !== last) {
+        last = sig + read.empty;
+        steady = 0;
+        cartCount = read.rows.length;
+        cartNow = sig;
+        paintBar();
+      } else steady++;
+      const settled = steady >= 2 && (read.rows.length > 0 || (read.full && read.empty));
+      if (cartWanted) {
+        waited++;
+        if (settled && read.rows.length) {
+          cartWanted = false;
+          copyCart(true, true);
+        } else if (read.empty) {
+          cartWanted = false;
+          toast('Your ' + cartAgentName() + ' cart is empty.', 'warn');
+        } else if (waited === 12 && !read.rows.length) {
+          toast('Sign in to ' + cartAgentName() + ' and RepHop copies your cart in once it shows. Or press “Copy cart to RepHop” at the bottom left.', 'warn', { label: 'OK', fn: () => {} }, { sticky: true });
+        }
+        return;
+      }
+      if (settings.cartSync && settled && !cartBusy && cartTried !== sig) copyCart(true, false);
+    }, 1000);
+  }
 
   // -------------------------------------------------------------- grab all
 
@@ -1107,6 +1780,13 @@
     const direct = L.parseLink(post.url_overridden_by_dest || post.url || '');
     if (direct) entries.push({ url: direct.url, label: post.title, ctx: Object.assign({ author: post.author }, base), key: direct.key });
     add(post.selftext || '', { author: post.author });
+    // A gallery's photos can carry a link and caption each.
+    for (const g of post.gallery_data && Array.isArray(post.gallery_data.items) ? post.gallery_data.items : []) {
+      const out = typeof g.outbound_url === 'string' ? L.parseLink(g.outbound_url) : null;
+      const caption = typeof g.caption === 'string' ? g.caption : '';
+      if (out) entries.push({ url: out.url, label: L.cleanLabel(caption.replace(/https?:\/\/\S+/g, ' ')) || post.title, ctx: Object.assign({ author: post.author }, base), key: out.key });
+      add(caption, { author: post.author });
+    }
     const walk = (children) => {
       for (const c of children || []) {
         if (!c || !c.data) continue;
@@ -1276,7 +1956,7 @@
           if (foldedRows() && expandRows()) await sleep(400);
           if (!pageItem || pageItem.key !== key) return;
           const groups = optionGroups();
-          if (groups && groups.length && !groups.some((g) => g.multi) && !foldedRows()) send({ type: 'pagePatch', key, title, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text) })) });
+          if (groups && groups.length && !groups.some((g) => g.multi) && !foldedRows()) send({ type: 'pagePatch', key, title, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text), i: g.options.map((o) => o.img) })) });
         }, 700);
       }, 800);
     } else if (IS_MARKET) {
@@ -1347,7 +2027,7 @@
     const name = el.querySelector('.sku-name, .sku-text');
     const img = el.querySelector('img');
     const text = ((name && (name.getAttribute('title') || name.textContent)) || (img && (img.title || img.alt)) || el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim();
-    return { el, text, disabled: el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true', selected: el.classList.contains('active') };
+    return { el, text, img: img ? img.getAttribute('src') || '' : '', disabled: el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true', selected: el.classList.contains('active') };
   }
 
   /**
@@ -1511,13 +2191,42 @@
     const picked = selectedOptions(false);
     await send({ type: 'cartMark', key, options: picked });
     const groups = optionGroups();
-    if (groups && groups.length && !groups.some((g) => g.multi)) send({ type: 'pagePatch', key, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text) })) });
+    if (groups && groups.length && !groups.some((g) => g.multi)) send({ type: 'pagePatch', key, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text), i: g.options.map((o) => o.img) })) });
     if (!stillOn(key)) return;
     dropNeed();
     auto = { key, state: 'done', need: '', who: auto.who };
     paintBar();
     const at = queue.i;
     setTimeout(() => stillOn(key) && send({ type: 'queue', op: 'step', delta: 1, result: { key, r: how }, at }).then(afterQueueStep), 1200);
+  }
+
+  /**
+   * A "prove you are not a robot" check on the page (a slider, a picture puzzle, a Cloudflare box). RepHop never
+   * touches one: it hands the page to you and waits.
+   */
+  function robotCheck() {
+    if (/^just a moment/i.test(document.title)) return true;
+    for (const f of document.querySelectorAll('iframe')) {
+      if (/captcha|challenges\.cloudflare\.com|turnstile|geetest/i.test(f.src || '') && shown(f)) return true;
+    }
+    for (const el of document.querySelectorAll('[id*="captcha" i], [class*="captcha" i], [id*="cf-chl" i], [class*="cf-turnstile" i]')) if (shown(el)) return true;
+    return false;
+  }
+
+  /** Wait (up to five minutes) for you to clear a robot check, then carry on. False when the listing was handed over. */
+  async function waitRobot(key) {
+    autoNeeds(key, agent.name + ' wants to check you are not a robot. Solve it on the page; RepHop waits and carries on by itself.' + (settings.pressMyself ? '' : ' If it keeps asking, try Settings → “Let me press Add To Cart myself”.'));
+    await waitFor(() => !stillOn(key) || handedOver || !robotCheck(), 300000, 700);
+    if (!stillOn(key) || handedOver) return false;
+    if (robotCheck()) {
+      autoNeeds(key, 'RepHop has stopped waiting for the check. Solve it and press Add To Cart yourself, or skip this one.');
+      return false;
+    }
+    dropNeed();
+    auto = { key, state: 'working', need: '', who: auto.who };
+    paintBar();
+    await sleep(800);
+    return true;
   }
 
   /** "Black · M · ×2": what is wanted for this item, for messages that ask you to choose. */
@@ -1569,10 +2278,15 @@
     const hint = want ? ' ' + forWhom + want + '.' : '';
     if (!SB) return autoNeeds(key, 'Choose the options and press Add To Cart. RepHop marks it and moves on to the next one.' + hint);
 
-    // The listing fills in a moment after the page.
+    // The listing fills in a moment after the page (or the site first wants to know you are not a robot).
     const since = Date.now();
-    await waitFor(() => listingState() !== 'loading' || (Date.now() - since > 6000 && signedOut()), 25000);
+    await waitFor(() => listingState() !== 'loading' || robotCheck() || (Date.now() - since > 6000 && signedOut()), 25000);
     if (!stillOn(key)) return;
+    if (robotCheck()) {
+      if (!(await waitRobot(key))) return;
+      await waitFor(() => listingState() !== 'loading', 25000);
+      if (!stillOn(key)) return;
+    }
     const state = listingState();
     if (state === 'refused') return autoNeeds(key, agent.name + ' will not take this item (see its notice on the page). Skip it.');
     if (state === 'gone') return autoNeeds(key, agent.name + ' says this listing has been taken down, so it cannot be added. Skip it.');
@@ -1658,8 +2372,24 @@
     }
 
     // Whatever happened while waiting, the rows are checked once more at the moment of pressing.
+    if (robotCheck() && !(await waitRobot(key))) return;
     if (!(await settle())) return;
     if (!stillOn(key) || handedOver || !addEnabled()) return;
+
+    if (settings.pressMyself) {
+      // Everything is set; the press is yours. RepHop notices it (watchAddToCart), marks the item and moves on.
+      const b = addButton();
+      auto = { key, state: 'press', need: '', who: auto.who };
+      paintBar();
+      dropNeed();
+      needNote = toast('All set' + (want ? ': ' + want : '') + '. Press Add To Cart on the page and RepHop moves on to the next one.', 'ok need', null, { sticky: true });
+      if (b) {
+        b.style.outline = '3px solid #ff6b35';
+        b.style.outlineOffset = '3px';
+        b.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+      return;
+    }
 
     // One press per step, recorded before it happens.
     const go = await send({ type: 'queue', op: 'press', key });
@@ -1667,8 +2397,14 @@
     if (!go || !go.first) return autoNeeds(key, 'RepHop has already pressed Add To Cart for this one. Check your cart, then go on.');
     markPress();
     addButton().click();
-    await waitFor(() => cartConfirmed() || cartRefused(), 10000, 250);
+    await waitFor(() => cartConfirmed() || cartRefused() || robotCheck(), 10000, 250);
     if (!stillOn(key)) return;
+    if (robotCheck() && !cartConfirmed()) {
+      // The site asks once the button is pressed: the check is yours, and the site's answer is waited for.
+      autoNeeds(key, agent.name + ' wants to check you are not a robot. Solve it on the page; RepHop marks the item once ' + agent.name + ' says it is in your cart.');
+      await waitFor(() => !stillOn(key) || handedOver || cartConfirmed() || cartRefused(), 300000, 700);
+      if (!stillOn(key) || handedOver) return;
+    }
     if (cartConfirmed()) return cartDone(key, 'added');
     if (cartRefused()) {
       const why = refusalText();
@@ -1712,21 +2448,23 @@
         const picked = selectedOptions(false);
         const mark = async () => {
           if (inRun) return cartDone(key, 'manual');
-          if (st.status === 'carted' || st.status === 'bought') {
-            if (picked.length) send({ type: 'update', keys: [itemKey], patch: { options: picked } });
+          // Marks the pick this matches; another colour or size becomes a pick of its own.
+          const res = await send({ type: 'cartByHand', key: itemKey, options: picked });
+          refreshStates();
+          if (!res || !res.ok) return;
+          if (res.was === 'new') {
+            toast('Added ' + picked.map((o) => o.v).join(' / ') + ' as another pick from this listing, marked “in cart”.', 'ok', { label: 'Undo', fn: () => send({ type: 'pick', op: 'remove', key: itemKey, id: res.pick }).then(refreshStates) });
             return;
           }
-          const res = await send({ type: 'update', keys: [itemKey], patch: Object.assign({ status: 'carted' }, picked.length ? { options: picked } : {}) });
-          if (!res || !res.ok) return;
           if (queueHere() && settings.autoAdvance) {
             let cancelled = false;
             toast('Marked “in cart”. Next item in 3 seconds…', 'ok', { label: 'Stay here', fn: () => (cancelled = true) });
             const at = queue ? queue.i : undefined;
             setTimeout(() => !cancelled && send({ type: 'queue', op: 'step', delta: 1, at }).then(afterQueueStep), 3000);
-          } else toast('Marked “in cart” in your RepHop list' + (picked.length ? ', with ' + picked.map((o) => o.v).join(' / ') + '.' : '.'), 'ok', { label: 'Undo', fn: () => send({ type: 'update', keys: [itemKey], patch: { status: 'saved' } }) });
+          } else toast('Marked “in cart” in your RepHop list' + (picked.length ? ', with ' + picked.map((o) => o.v).join(' / ') + '.' : '.'), 'ok', { label: 'Undo', fn: () => (res.pick ? send({ type: 'pick', op: 'set', key: itemKey, id: res.pick, patch: { status: 'saved' } }) : send({ type: 'update', keys: [itemKey], patch: { status: 'saved' } })).then(refreshStates) });
         };
         if (worked) mark();
-        else if (inRun || (st.status !== 'carted' && st.status !== 'bought')) {
+        else {
           dropNeed();
           needNote = toast('Did that go into your cart?', 'ok', { label: 'Yes, mark it', fn: mark }, inRun ? { sticky: true } : null);
         }
@@ -1848,10 +2586,12 @@
     scan(document);
     observe();
     watchAddToCart();
+    watchCart();
     if (IS_AGENT) {
       send({ type: 'whoami' }).then((r) => {
         myTabId = r && typeof r.tabId === 'number' ? r.tabId : null;
         backTo = r && typeof r.back === 'string' ? r.back : null;
+        cartWanted = !!(r && r.cartImport) && isCart();
         paintBar();
         autoCart();
       });

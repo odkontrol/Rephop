@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RepHop: Rep Link Opener & Haul List",
   "short_name": "RepHop",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "description": "Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to one list.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -56,7 +56,9 @@
     "*://*.tb.cn/*",
     "*://*.ikako.vip/*",
     "https://docs.google.com/spreadsheets/*",
-    "https://open.er-api.com/*"
+    "https://open.er-api.com/*",
+    "*://*.redd.it/*",
+    "*://*.geilicdn.com/*"
   ],
   "optional_host_permissions": [
     "*://*/*"
@@ -124,5 +126,16 @@
       },
       "description": "Save every rep link on this page"
     }
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/vendor/mobilenet/model.json",
+        "lib/vendor/mobilenet/group1-shard1of1.bin"
+      ],
+      "matches": [
+        "*://*.reddit.com/*"
+      ]
+    }
+  ]
 }

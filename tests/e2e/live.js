@@ -78,12 +78,12 @@ async function until(fn, ms, step) {
   await panel.click('#live-start');
   await sleep(500);
   check('starting a live haul asks for your name first', /Type your name first/.test((await liveBox()).toasts.join(' ')) && !(await group()).live);
-  await panel.type('#live-name', 'Ahmed');
+  await panel.type('#live-name', 'Jordan');
   await panel.click('#live-start');
   const hosting = await until(async () => { const g = await group(); return g.live && g.live.role === 'host' ? g.live : null; }, 8000);
   const invite = await until(() => panel.evaluate(() => window.__copied || ''), 4000);
   const inv = V.readInvite('yo join my haul ' + invite);
-  check('Start creates a room on the relay and copies an invite that names the host and the relay, and nothing else readable', !!hosting && !!inv && inv.relay === RELAY && inv.name === 'Ahmed' && inv.room === hosting.room && inv.key === hosting.key && /^RHL1\.[A-Za-z0-9_-]+$/.test(invite), { invite: invite && invite.slice(0, 30) });
+  check('Start creates a room on the relay and copies an invite that names the host and the relay, and nothing else readable', !!hosting && !!inv && inv.relay === RELAY && inv.name === 'Jordan' && inv.room === hosting.room && inv.key === hosting.key && /^RHL1\.[A-Za-z0-9_-]+$/.test(invite), { invite: invite && invite.slice(0, 30) });
   check('the host\'s secret is not in the invite', !!hosting && !Buffer.from(invite.slice(5), 'base64url').toString().includes(hosting.secret));
 
   // A friend ("Sam"), played with the extension's own code.
@@ -102,7 +102,7 @@ async function until(fn, ms, step) {
   r = await V.call(sam, 'list', { method: 'PUT', body: { blob: await samList([{ k: 'weidian:7422222221', t: 'Sam hoodie', p: 100, q: 2, o: [['Color', 'Black']], s: 'XL' }]) } });
   const arrived = await until(async () => { const b = await liveBox(); return b.people.some((x) => /^Sam \[live\]: Sam hoodie \(Black · size XL\)/.test(x)) ? b : null; }, 8000);
   check('Sam\'s list shows up on the host\'s screen by itself, marked live, with Sam\'s choices', r.ok && !!arrived, await liveBox());
-  check('and the haul adds up: a row for the host and a row for Sam', !!arrived && arrived.rows.length === 2 && /^Ahmed \(you\)/.test(arrived.rows[0]) && /^Sam.*¥200/.test(arrived.rows[1]), arrived && arrived.rows);
+  check('and the haul adds up: a row for the host and a row for Sam', !!arrived && arrived.rows.length === 2 && /^Jordan \(you\)/.test(arrived.rows[0]) && /^Sam.*¥200/.test(arrived.rows[1]), arrived && arrived.rows);
   await sleep(600);
   r = await V.call(sam, 'list', { method: 'PUT', body: { blob: await samList([{ k: 'weidian:7422222221', t: 'Sam hoodie', p: 100, q: 2, o: [['Color', 'Black']], s: 'XL' }, { k: 'taobao:742222222223', t: 'Sam cap', p: 40 }]) } });
   const grown = await until(async () => { const b = await liveBox(); return b.people.some((x) => /Sam cap/.test(x)) ? b : null; }, 8000);
@@ -127,7 +127,7 @@ async function until(fn, ms, step) {
     const note = st.inbox ? await V.open(sam.key, V.about(sam, sam.mid, 'inbox'), st.inbox) : null;
     return note && note.marks && note.marks.some((m) => m[1] === 'carted') && note.extra === 10 ? note : null;
   }, 10000, 500);
-  check('Sam is told what is in the cart and what they owe (items, their share of shipping, the sum)', !!told && told.host === 'Ahmed' && told.marks.length === 2 && told.marks[0][1] === 'carted' && told.marks[1][1] === 'saved' && told.yuan === 240 && told.share === 5 && Math.abs(told.owes - (told.items + 5)) < 0.001 && told.people === 2, told);
+  check('Sam is told what is in the cart and what they owe (items, their share of shipping, the sum)', !!told && told.host === 'Jordan' && told.marks.length === 2 && told.marks[0][1] === 'carted' && told.marks[1][1] === 'saved' && told.yuan === 240 && told.share === 5 && Math.abs(told.owes - (told.items + 5)) < 0.001 && told.people === 2, told);
   check('the note says nothing about anyone else\'s items', !!told && !/Grey hoodie|Cargo pants|7411111111/.test(JSON.stringify(told)));
 
   r = await V.call(sam, 'leave');
@@ -155,7 +155,7 @@ async function until(fn, ms, step) {
   await panel.click('#live-join');
   const pending = await until(async () => { const st = await V.call(nadia, 'state', { method: 'GET' }); return st.members && st.members.length ? st.members[0] : null; }, 8000);
   const hello = pending ? await V.open(nadia.key, V.about(nadia, pending.id, 'hello'), pending.hello) : null;
-  check('asking to join sends the name and nothing else: no list while waiting', !!pending && pending.status === 'pending' && !!hello && hello.name === 'Ahmed' && pending.list === null, pending && { status: pending.status, list: pending.list, hello });
+  check('asking to join sends the name and nothing else: no list while waiting', !!pending && pending.status === 'pending' && !!hello && hello.name === 'Jordan' && pending.list === null, pending && { status: pending.status, list: pending.list, hello });
   const waiting = await liveBox();
   check('the friend\'s screen says it is waiting, and that only the name was sent', waiting.member && /Waiting for Nadia/.test(waiting.memberText) && /Only your name/.test(waiting.memberText), waiting.memberText);
   r = await V.call(nadia, 'approve', { body: { id: pending.id, ok: true } });
@@ -164,7 +164,7 @@ async function until(fn, ms, step) {
     const m = st.members && st.members[0];
     return m && m.list ? U.unpackShare(await V.open(nadia.key, V.about(nadia, m.id, 'list'), m.list)) : null;
   }, 10000, 500);
-  check('once let in, the browser shares its list by itself: what is not bought, with choices, quantity and its own size', r.ok && !!shared && shared.name === 'Ahmed' && shared.items.length === 2 && !shared.items.some((x) => x.key === 'weidian:7411111113') &&
+  check('once let in, the browser shares its list by itself: what is not bought, with choices, quantity and its own size', r.ok && !!shared && shared.name === 'Jordan' && shared.items.length === 2 && !shared.items.some((x) => x.key === 'weidian:7411111113') &&
     shared.items.some((x) => x.key === 'weidian:7411111111' && x.options[0].v === 'Grey' && x.size === 'L') && shared.items.some((x) => x.key === 'taobao:741111111112' && x.qty === 2), shared);
   // a change in the browser's list goes out without anyone pressing anything
   await sw.evaluate(() => updateItems(['taobao:741111111112'], { qty: 3 }));

@@ -31,6 +31,8 @@ Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, o
 | Hover or focus a link | A card with the picture, name and price |
 | Click `Save all N links` in the corner | Every link on the page is saved, plus the comments Reddit has not put on screen yet |
 
+**Gallery posts:** while a photo of a gallery is on screen (in the post or full screen), the bar offers **Save from this photo**. It lists the items linked in the post and in the poster's comments, with their pictures, and puts first the one that looks most like the photo: RepHop compares the photo with each product's own pictures on your computer, with a small image model that comes with RepHop (MobileNet V2, see `lib/vendor/NOTICE.txt`). It is a guess, so every item stays in the list and you choose. A photo the poster put its own link on also gets the ⚡ | + button, and **Save all** saves every link in the post, the photos' included.
+
 Each link also gets a small `⚡ | +` button: the left half opens, the right half saves. On a link you already saved, the right half shows a green check; clicking it offers "Open list" or "Remove" rather than deleting straight away.
 
 Only your own clicks and key presses count. The hotkeys act on a link your mouse has actually moved onto, or one you reached with the keyboard; a link that slides under a resting cursor while you scroll does nothing, and neither does a click made by a page script.
@@ -51,6 +53,9 @@ Only your own clicks and key presses count. The hotkeys act on a link your mouse
 - Thumbnail, name, price in yuan and your currency, where you found it, with a link back to the post or comment.
 - The same product reached through three different links is stored once.
 - Folders, tags, notes, quantity, in-cart and bought status, search, sort and filters, and a running total.
+- **Your list follows your agent's cart:** open your cart at the agent and RepHop brings the list in step by itself: everything in the cart is saved with the colour, size and quantity you picked there and marked **In cart** (two lines from one listing, like the top and trousers of a set, become two picks). If something marked In cart has left the cart, RepHop asks whether you bought it. Turn it off under Settings → **Keep the list in step with your agent's cart**; then use **Copy cart to RepHop** in the bar at the bottom left of the cart, or **Add → Copy my Superbuy cart into the list**. Superbuy and AllChinaBuy carts are read exactly; other agents' carts are read by finding each product link next to a quantity box (not yet checked on their live sites).
+- **Mark as in cart without adding:** added something at the agent yourself? Press **▾** beside **Add to cart** on the card (or on a pick) and choose **Already in my cart: mark it**, or select several and press **Mark in cart**. Undo is offered.
+- **Weight estimate:** the total and each card show roughly what your haul weighs, from each item's type (a hoodie ≈ 0.7 kg, sneakers with their box ≈ 1.25 kg, a puffer ≈ 1.3 kg). Set an item's real weight under **Edit** once your agent has weighed it; untick **Count shoes with their boxes** in Settings if your agent throws them away. Group hauls show each person's weight and can split shipping **by weight**.
 - **Delete quickly:** the × on a card deletes it (with Undo). **Select all**, then **Delete**, clears a folder or the whole list.
 - **Go through:** opens your items one at a time in a single tab, with Next / Previous on the page (`]` and `[`).
 - **Colour and size drop-downs on every card**, showing the choices the listing offers, and an **Add to cart** button next to them (see below).
@@ -71,7 +76,9 @@ A listing you opened from a Reddit post also has **← Back to r/…** in that b
 
 Every card in the list shows a drop-down for each row of choices its listing offers (colour, size, style…) and an **Add to cart** button. Nothing has to be selected first.
 
-**More than one thing from the same listing** (the top and the trousers of a set, or two colourways): press **+ Another colour or size** on the card. Each pick gets its own drop-downs, quantity and Add to cart; the card's own Add to cart adds every pick not yet in your cart, one after the other. Picks count in the total, in share codes and in group hauls.
+**More than one thing from the same listing** (the top and the trousers of a set, or two colourways): press **+ Another colour or size** on the card. Each pick gets its own drop-downs, quantity and Add to cart; the card's own Add to cart adds every pick not yet in your cart, one after the other. Picks count in the total, in share codes and in group hauls. When the listing has a photo for each colour, the card shows the colourway you picked, and each pick shows its own.
+
+On the agent's listing, RepHop's bar says how much of it is in your cart (`1 of 2 in cart`). Click it to see every pick with its colour and size, add the ones still to add, or keep what is selected on the page as another pick (**+ Add to my list** / **+ Add to cart**). Pressing the page's own Add To Cart works too: a different colour or size becomes a new pick, and never replaces the one you already added.
 
 **Where the drop-downs come from**
 
@@ -93,6 +100,8 @@ It only ever picks something it has a reason to pick. The site pre-selects a col
 Three things it will not do: tick Superbuy's "I have read and agree" box under its risk notice (if that box is unticked it waits for you), press Buy Now, or press Add To Cart twice for the same step. It acts only in the tab the run opened.
 
 Listings RepHop leaves to you, with a message saying why: wholesale listings that take an amount per choice, listings where Superbuy shows a notes box instead of choice buttons, listings the shop has taken down, and items Superbuy refuses to sell. The quantity on the item is set exactly, or the listing is handed to you.
+
+**"Prove you are not a robot" checks.** If the agent shows one, RepHop stops, leaves it to you and carries on once it is gone; it never touches the check. If your agent keeps asking, turn on Settings → **Let me press Add To Cart myself**: RepHop then sets the colour, size and quantity and waits for your own click on Add To Cart.
 
 Select several items and press **Add to cart** in the bar that appears (or More → Add these to cart) to add them one after the other. At the end RepHop reports how many it added, how many you added, and how many were skipped. Nothing is ever paid for; items only go into your cart.
 

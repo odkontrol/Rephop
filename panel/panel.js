@@ -25,6 +25,20 @@
     return el;
   }
 
+  // Icons drawn as SVG (one stroke weight), not as text characters.
+  const SVG = {
+    sun: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    moon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>',
+    x: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    down: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+    scale: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8h12l2 12H4L6 8Z"/><path d="M9.5 8a2.5 2.5 0 0 1 5 0"/></svg>',
+  };
+  function icon(name) {
+    const t = document.createElement('template');
+    t.innerHTML = SVG[name];
+    return t.content.firstChild;
+  }
+
   const KEYS = ['items', 'settings', 'folders', 'sellers', 'seen', 'rates', 'queue', 'syncState', 'cartRun', 'group'];
   const data = { items: {}, settings: U.mergeSettings(), folders: U.DEFAULT_FOLDERS.slice(), sellers: {}, seen: {}, rates: null, queue: null, syncState: null, cartRun: null, group: null };
   let thisTab = null; // the product on the browser tab beside the panel, if there is one
@@ -62,7 +76,7 @@
     }
     const b = $('#theme-toggle');
     if (!b) return;
-    b.textContent = dark ? '☀' : '☾';
+    b.replaceChildren(icon(dark ? 'sun' : 'moon'));
     b.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
   }
 
@@ -77,7 +91,7 @@
     }
     show('list');
     toast('Pick your shopping agent first.', { error: true });
-    $('#q-agent').focus();
+    $('#pick-agent').scrollIntoView({ block: 'center' });
   }
 
   // ---------------------------------------------------------------- toasts
@@ -195,22 +209,34 @@
 
   // ----------------------------------------------------------- list render
 
-  function thumb(it) {
+  /**
+   * An item's picture: the colourway you picked when the listing has a picture for it (`pick` for one of its other
+   * picks), otherwise the listing's own picture.
+   */
+  function thumb(it, pick, cls) {
     const short = (L.PLATFORMS[it.platform] || {}).short || '?';
-    const btn = h('button', { class: 'thumb', type: 'button', title: 'Open in ' + agent.name, onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) });
-    if (it.image && /^https:\/\//.test(it.image)) {
+    const own = it.platform && Array.isArray(it.choices) ? U.pickImage(it, pick || null, data.settings) : '';
+    const src = own || (pick ? '' : it.image);
+    const btn = h('button', { class: cls || 'thumb', type: 'button', title: 'Open in ' + agent.name, onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) });
+    if (src && /^https:\/\//.test(src)) {
       const img = h('img', { alt: '', loading: 'lazy', referrerPolicy: 'no-referrer' });
-      // Ask the picture host for a small version (originals can be megabytes); fall back to the original, then to a text tile.
-      const small = U.thumbUrl(it.image, 160) || it.image;
+      // Ask the picture host for a small version (originals can be megabytes); fall back to the original, then to the
+      // listing's own picture, then to a text tile.
+      const small = U.thumbUrl(src, 160) || src;
       img.addEventListener('error', () => {
-        if (img.src !== it.image && !img.dataset.retried) {
+        if (img.src !== src && !img.dataset.retried) {
           img.dataset.retried = '1';
-          img.src = it.image;
-        } else img.replaceWith(short);
+          img.src = src;
+        } else if (own && !pick && it.image && img.dataset.retried !== '2' && /^https:\/\//.test(it.image)) {
+          img.dataset.retried = '2';
+          img.src = U.thumbUrl(it.image, 160) || it.image;
+        } else if (pick) img.remove();
+        else img.replaceWith(short);
       });
       img.src = small;
       btn.append(img);
-    } else btn.textContent = short;
+    } else if (pick) return null;
+    else btn.textContent = short;
     return btn;
   }
 
@@ -229,14 +255,18 @@
       meta.append(h('span', { class: 'price' }, U.yuan(it.price) + (all > 1 ? ' × ' + all : '')));
       if (conv != null && s.currency !== 'CNY') meta.append(h('span', {}, '≈ ' + U.money(conv * all, s.currency)));
     }
-    meta.append(h('span', { class: 'badge', title: it.url }, (L.PLATFORMS[it.platform] || {}).label || it.platform));
+    if (it.platform !== 'yupoo') {
+      const w = U.weightOf(it, s);
+      const pieces = U.totalQty(it);
+      meta.append(h('span', { class: 'weight', title: w.own ? 'The weight you set (Edit)' : 'Estimated weight, for ' + w.label.toLowerCase() + (pieces > 1 ? ', ' + U.kg(w.g) + ' each' : '') + '. Set the real weight under Edit.' }, (w.own ? '' : '~') + U.kg(w.g * pieces)));
+    }
+    const plat = (L.PLATFORMS[it.platform] || {}).label || it.platform;
+    if (!src) meta.append(h('span', { class: 'plat', title: it.url }, plat));
     if (it.platform === 'yupoo') {
       meta.append(it.pending
         ? h('span', { class: 'badge', title: "Yupoo didn't answer when this was saved. Open Edit and press Find buy link." }, 'Buy link not checked')
         : h('span', { class: 'badge bad', title: 'The seller put no Weidian or Taobao link on this album' }, 'No buy link'));
     }
-    if (it.status === 'carted') meta.append(h('span', { class: 'badge good' }, 'In cart'));
-    if (it.status === 'bought') meta.append(h('span', { class: 'badge good' }, 'Bought'));
     if (state === 'soldout') meta.append(h('span', { class: 'badge bad' }, 'Sold out'));
     if (state === 'gone') meta.append(h('span', { class: 'badge bad', title: 'Weidian no longer lists this item' }, 'Removed?'));
     if (it.seller) meta.append(h('span', { class: 'badge' + (trusted(it) ? ' gold' : ''), title: trusted(it) ? 'Trusted seller' : 'Seller' }, (trusted(it) ? '★ ' : '') + sellerName(it.seller)));
@@ -251,7 +281,7 @@
     if (src) {
       const where = U.sourceText(src) || 'source';
       const url = L.toUrl(src.commentUrl || src.postUrl);
-      info.append(h('div', { class: 'src' }, url ? h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', title: 'Open where you found it' }, 'from ' + where) : 'from ' + where));
+      info.append(h('div', { class: 'src' }, h('span', { class: 'plat', title: it.url }, plat), ' · ', url ? h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', title: 'Open where you found it' }, 'from ' + where) : 'from ' + where));
     }
     if ((it.tags && it.tags.length) || it.note) {
       info.append(h('div', { class: 'note' }, (it.tags || []).map((t) => h('span', { class: 'tag' }, '#' + t)), it.note || ''));
@@ -262,25 +292,28 @@
     // (A friend's copy of the same product being added in a group haul is not this card's business.)
     const adding = !!(inQueue && data.queue.auto && !(Array.isArray(data.queue.owner) && data.queue.owner[data.queue.i]));
     const cartBtn = it.platform === 'yupoo' ? null
-      : bought ? h('button', { type: 'button', class: 'on', title: 'Marked as bought. Change the status under Edit.', onclick: () => toast('This one is marked as bought. Change the status under Edit.') }, '✓ Bought')
+      : bought ? h('span', { class: 'on chip', title: 'Marked as bought. Change the status under Edit.' }, '✓ Bought')
       : cartOn ? h('button', { type: 'button', class: 'on', title: 'In your cart. Click to unmark it (your cart itself is not changed).', 'aria-pressed': 'true',
         onclick: async () => {
           await send({ type: 'update', keys: [it.key], patch: { status: 'saved' } });
           toast('Unmarked. Your cart at ' + agent.name + ' was not changed.', { action: { label: 'Undo', fn: () => send({ type: 'update', keys: [it.key], patch: { status: 'carted' } }) } });
         } }, '✓ In cart')
-      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Open this at ' + agent.name + ', set its options and press Add To Cart' + ((it.more || []).some((p) => p.status === 'saved') ? ' (and the other picks still to add)' : ''), onclick: () => addOne(it) }, adding ? 'Adding…' : 'Add to cart');
+      : h('span', { class: 'split' },
+        h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Open this at ' + agent.name + ', set its options and press Add To Cart' + ((it.more || []).some((p) => p.status === 'saved') ? ' (and the other picks still to add)' : ''), onclick: () => addOne(it) }, adding ? 'Adding…' : 'Add to cart'),
+        markMenu(it, null));
     const acts = h('div', { class: 'acts' },
-      h('button', { class: 'go primary', type: 'button', onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) }, it.platform === 'yupoo' ? 'Open album' : 'Open in ' + agent.name),
+      h('button', { class: 'go', type: 'button', title: it.platform === 'yupoo' ? 'Open the album' : 'Open in ' + agent.name, onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) }, it.platform === 'yupoo' ? 'Open album' : ['Open', h('span', { class: 'go-s' }, ' in ' + agent.name)]),
       it.platform !== 'yupoo' && h('button', { type: 'button', title: 'Look for QC photos of this item', onclick: () => send({ type: 'openTab', url: L.qcUrl(it, s) }) }, 'QC'),
       cartBtn,
       h('button', { type: 'button', title: 'Edit, tag, move or delete', 'aria-expanded': String(isOpen), onclick: () => { view.openKey = isOpen ? null : it.key; render(); } }, isOpen ? 'Close' : 'Edit'));
 
     const li = h('li', { class: 'item' + (it.viewedAt ? ' viewed' : '') + (inQueue ? ' current' : '') },
-      h('button', { type: 'button', class: 'x', title: 'Delete from your list (you can undo)', 'aria-label': 'Delete ' + U.displayTitle(it), onclick: () => removeKeys([it.key]) }, '×'),
+      h('button', { type: 'button', class: 'x', title: 'Delete from your list (you can undo)', 'aria-label': 'Delete ' + U.displayTitle(it), onclick: () => removeKeys([it.key]) }, icon('x')),
       h('div', { class: 'main' },
         h('input', { type: 'checkbox', class: 'pick', checked: view.selected.has(it.key), 'aria-label': 'Select ' + U.displayTitle(it),
           onchange: (e) => { e.target.checked ? view.selected.add(it.key) : view.selected.delete(it.key); renderChrome(); } }),
         thumb(it), info),
+      (it.more || []).length && (it.choices || []).length ? h('div', { class: 'pick-n first' }, 'Pick 1') : null,
       choiceRow(it),
       (it.more || []).length ? h('div', { class: 'picks' }, it.more.map((p, n) => pickRow(it, p, n))) : null,
       it.platform !== 'yupoo' && (it.choices || []).length && (it.more || []).length < U.MAX_MORE
@@ -290,6 +323,12 @@
     li.dataset.key = it.key;
     if (isOpen) li.append(editor(it));
     return li;
+  }
+
+  /** "In cart" / "Bought" in a fixed place: a label on the picture. */
+  function withState(el, status) {
+    if (status === 'carted' || status === 'bought') el.append(h('span', { class: 'state ' + status }, status === 'carted' ? 'In cart' : 'Bought'));
+    return el;
   }
 
   function editor(it) {
@@ -303,7 +342,7 @@
     const guess = U.guessKind(Object.assign({}, it, { kind: '' }));
     const short = (k) => U.KINDS[k].split(' (')[0];
     const kindSel = h('select', { onchange: (e) => save({ kind: e.target.value }) },
-      h('option', { value: '' }, guess ? 'Work it out (' + short(guess).toLowerCase() + ')' : 'Work it out'),
+      h('option', { value: '' }, guess ? 'Automatic (' + short(guess).toLowerCase() + ')' : 'Automatic'),
       Object.keys(U.KINDS).map((k) => h('option', { value: k }, short(k))),
       h('option', { value: 'other' }, 'Something else'));
     kindSel.value = it.kind || '';
@@ -313,9 +352,10 @@
       field('Name', h('input', { type: 'text', value: U.displayTitle(it), maxLength: 200, onchange: (e) => save({ customTitle: e.target.value.trim() }) }), true),
       field('Price (¥)', h('input', { type: 'number', min: '0', step: '0.01', value: it.price == null ? '' : String(it.price), onchange: (e) => save({ price: e.target.value }) })),
       field('Quantity', h('input', { type: 'number', min: '1', max: '99', step: '1', value: String(it.qty || 1), onchange: (e) => save({ qty: e.target.value }) })),
+      field('Weight of one (g)', h('input', { type: 'number', min: '1', max: '30000', step: '1', value: it.weight ? String(it.weight) : '', placeholder: '≈ ' + U.weightOf(Object.assign({}, it, { weight: 0 }), data.settings).g + ' estimated', title: 'Leave empty for RepHop’s estimate. Once your agent has weighed it, put the real weight here.', onchange: (e) => save({ weight: e.target.value }) })),
       field('Folder', folderSel),
       field('Status', statusSel),
-      field('Type (decides which of your sizes is used)', kindSel),
+      field('Type', kindSel),
       field('Size for this item', h('input', { type: 'text', value: it.size || '', maxLength: 40, placeholder: mine ? 'My sizes: ' + mine : 'e.g. 43 or L', onchange: (e) => save({ size: e.target.value }) })),
       field('Colour or style to pick', h('input', { type: 'text', value: it.style || '', maxLength: 40, placeholder: 'e.g. black', onchange: (e) => save({ style: e.target.value }) }), true),
       field('Tags (comma separated)', h('input', { type: 'text', value: (it.tags || []).join(', '), placeholder: 'shoes, size 43', onchange: (e) => save({ tags: e.target.value }) }), true),
@@ -504,6 +544,25 @@
     return runCart(keys, owner, what);
   }
 
+  /** Mark items as in your cart (or bought) without RepHop adding anything; the message offers Undo. */
+  async function markAs(keys, status, extra) {
+    const r = await send(Object.assign({ type: 'mark', keys, status }, extra || {}));
+    if (!r || !r.count) return toast(status === 'bought' ? 'Already marked as bought.' : 'Already marked as in your cart.');
+    const what = r.count === 1 ? '1 item' : r.count + ' items';
+    toast((status === 'bought' ? 'Marked ' + what + ' as bought.' : 'Marked ' + what + ' as in your cart.') + ' Nothing was added at ' + agent.name + '.', { action: { label: 'Undo', fn: () => send({ type: 'mark', restore: r.before }) } });
+  }
+
+  /** The ▾ beside Add to cart: added it at the agent yourself? Mark it, or mark it bought. */
+  function markMenu(it, p) {
+    const others = !p && (it.more || []).some((x) => x.status === 'saved');
+    const menu = h('details', { class: 'menu mark-menu' },
+      h('summary', { title: 'Added it yourself? Mark it as in your cart', 'aria-label': 'Mark as in cart or bought' }, icon('down')),
+      h('div', { class: 'menu-body' },
+        h('button', { type: 'button', onclick: () => { menu.open = false; markAs([it.key], 'carted', p ? { pick: p.id } : { all: true }); } }, others ? 'Already in my cart: mark all picks' : 'Already in my cart: mark it'),
+        h('button', { type: 'button', onclick: () => { menu.open = false; markAs([it.key], 'bought', p ? { pick: p.id } : { all: true }); } }, 'Mark as bought')));
+    return menu;
+  }
+
   /** A second (third…) choice from the same listing: starts with the size you picked, the rest to choose. */
   async function addPick(it) {
     const groups = (it.choices || []).map((c) => ({ name: c.n, options: c.o.map((t) => ({ text: t })) }));
@@ -520,11 +579,14 @@
     const set = (patch) => send({ type: 'pick', op: 'set', key: it.key, id: p.id, patch });
     const btn = p.status === 'bought' ? h('button', { type: 'button', class: 'on', title: 'Marked as bought. Click to unmark it.', onclick: () => set({ status: 'saved' }) }, '✓ Bought')
       : p.status === 'carted' ? h('button', { type: 'button', class: 'on', 'aria-pressed': 'true', title: 'In your cart. Click to unmark it (your cart itself is not changed).', onclick: () => set({ status: 'saved' }) }, '✓ In cart')
-      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Add this pick to your cart at ' + agent.name, onclick: () => addOne(it, p) }, adding ? 'Adding…' : 'Add to cart');
+      : h('span', { class: 'split' },
+        h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Add this pick to your cart at ' + agent.name, onclick: () => addOne(it, p) }, adding ? 'Adding…' : 'Add to cart'),
+        markMenu(it, p));
     return h('div', { class: 'pick-row', 'data-pick': p.id },
       h('div', { class: 'pick-head' },
+        thumb(it, p, 'pick-img'),
         h('span', { class: 'pick-n' }, 'Pick ' + (n + 2)),
-        h('label', { class: 'pick-qty', title: 'How many of this pick' }, '×', h('input', { type: 'number', min: '1', max: '99', step: '1', value: String(p.qty || 1), 'aria-label': 'How many of pick ' + (n + 2), onchange: (e) => set({ qty: e.target.value }) })),
+        h('label', { class: 'pick-qty', title: 'How many of this pick' }, h('span', { class: 'ql' }, 'Qty'), h('input', { type: 'number', min: '1', max: '99', step: '1', value: String(p.qty || 1), 'aria-label': 'How many of pick ' + (n + 2), onchange: (e) => set({ qty: e.target.value }) })),
         btn,
         h('button', { type: 'button', class: 'pick-x', title: 'Remove this pick (you can undo)', 'aria-label': 'Remove pick ' + (n + 2), onclick: async () => {
           const r = await send({ type: 'pick', op: 'remove', key: it.key, id: p.id });
@@ -581,16 +643,26 @@
     const sc = scope();
     let sum = 0;
     let unpriced = 0;
+    let grams = 0;
+    let guessed = false;
     for (const it of sc.list) {
       if (it.price == null) unpriced++;
       else sum += it.price * U.totalQty(it);
+      if (it.platform === 'yupoo') continue;
+      const w = U.weightOf(it, s);
+      grams += w.g * U.totalQty(it);
+      if (!w.own) guessed = true;
     }
     const conv = U.convert(sum, data.rates, s.currency);
     $('#count').textContent = sc.list.length === vis.length ? vis.length + (vis.length === 1 ? ' item' : ' items') : sc.label;
     const total = $('#total');
     total.replaceChildren();
     if (sc.list.length) {
-      total.append(h('b', {}, U.yuan(Math.round(sum * 100) / 100)), s.currency !== 'CNY' && conv != null ? ' ≈ ' + U.money(conv, s.currency) : '', unpriced ? ' · ' + unpriced + ' without a price' : '');
+      total.append(h('span', { class: 'line' }, h('b', {}, U.yuan(Math.round(sum * 100) / 100)), s.currency !== 'CNY' && conv != null ? ' ≈ ' + U.money(conv, s.currency) : ''));
+      const second = [];
+      if (grams) second.push(h('span', { class: 'weight', title: guessed ? 'Estimated from each item’s type (a hoodie about 0.7 kg, sneakers with their box about 1.25 kg). Your agent weighs the real thing; set it on an item under Edit.' : 'From the weights you set' }, (guessed ? '~' : '') + U.kg(grams)));
+      if (unpriced) second.push(unpriced + ' without a price');
+      if (second.length) total.append(h('span', { class: 'line sub' }, second.flatMap((x, i) => (i ? [' · ', x] : [x]))));
     }
     $('#scope').textContent = 'Applies to: ' + sc.label.toLowerCase();
     $('#start-queue').disabled = !sc.list.length;
@@ -636,6 +708,13 @@
     }
     $('#sort').value = view.sort;
     $('#f-status').value = view.status;
+    const on = [view.status, view.tag, view.seller].filter(Boolean).length;
+    $('#filter-count').hidden = !on;
+    $('#filter-count').textContent = String(on);
+    $('#filters-clear').hidden = !on;
+    $('#view-list').classList.toggle('is-empty', Object.keys(data.items).length === 0);
+    for (const e of $$('.ag-short')) e.textContent = (L.AGENTS[s.agent] || {}).short || 'Open';
+    $('#no-match-text').textContent = view.q && !on ? 'Nothing in your list matches “' + view.q + '”.' : 'Nothing matches these filters.';
 
     renderFolders();
     const all = Object.values(data.items);
@@ -647,10 +726,10 @@
     }
     const tagSel = $('#f-tag');
     view.tag = fillSelect(tagSel, Array.from(tags.keys()).sort().map((t) => [t, '#' + t + ' (' + tags.get(t) + ')']), view.tag, 'Any tag');
-    tagSel.hidden = !tags.size;
+    $('#f-tag-row').hidden = !tags.size;
     const sellerSel = $('#f-seller');
     view.seller = fillSelect(sellerSel, Array.from(sellers).sort((a, b) => String(a[1]).localeCompare(String(b[1]))).map(([k, n]) => [k, (data.sellers[k] && data.sellers[k].trusted ? '★ ' : '') + n]), view.seller, 'Any seller');
-    sellerSel.hidden = !sellers.size;
+    $('#f-seller-row').hidden = !sellers.size;
 
     for (const k of Array.from(view.selected)) if (!data.items[k]) view.selected.delete(k);
     const vis = visible();
@@ -696,8 +775,9 @@
 
   function renderSetup() {
     const cur = data.settings.agent;
-    $('#setup-agents').replaceChildren(...Object.entries(L.AGENTS).map(([k, a]) => h('button', { type: 'button', class: cur === k ? 'on' : '', 'aria-pressed': String(cur === k), onclick: () => patch({ agent: k }) }, k === 'custom' ? 'A different one…' : a.name)));
+    $('#setup-agents').replaceChildren(...Object.entries(L.AGENTS).map(([k, a]) => h('button', { type: 'button', class: cur === k ? 'on' : '', 'aria-pressed': String(cur === k), onclick: () => patch({ agent: k }) }, k === 'custom' ? 'Other…' : a.name)));
     $('#setup-done').textContent = cur ? 'Start using RepHop' : 'Pick your agent to start';
+    $('#setup-done').classList.toggle('waiting', !cur);
   }
 
   // --------------------------------------------------------------- group haul
@@ -726,7 +806,7 @@
     const out = [];
     const mine = [];
     for (const it of myHaul()) {
-      const base = { own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, size: U.sizeFor(it, data.settings), image: it.image };
+      const base = { own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, size: U.sizeFor(it, data.settings), image: it.image, kind: it.kind, weight: it.weight };
       if (it.status !== 'bought') mine.push(Object.assign({}, base, { qty: it.qty || 1, options: it.options || [], style: it.style || '', note: it.note || '', status: it.status }));
       // Each other pick from the same listing counts as its own item in the haul.
       for (const pick of it.more || []) {
@@ -801,8 +881,8 @@
     const cur = data.settings.currency;
     const m = (n) => (n == null ? '?' : U.money(n, cur));
     const approx = (yuan, conv) => U.yuan(yuan) + (cur !== 'CNY' ? ' ≈ ' + m(conv) : '');
-    const lines = ['Group haul, ' + new Date().toLocaleDateString(), 'Items: ' + approx(tot.yuan, tot.items) + ' (' + tot.count + (tot.count === 1 ? ' item' : ' items') + ')'];
-    if (tot.extra) lines.push('Shipping and fees: ' + m(tot.extra) + ', split ' + (split === 'cost' ? 'by item cost' : 'evenly'), 'Total: ' + m(tot.total));
+    const lines = ['Group haul, ' + new Date().toLocaleDateString(), 'Items: ' + approx(tot.yuan, tot.items) + ' (' + tot.count + (tot.count === 1 ? ' item' : ' items') + ', about ' + U.kg(tot.grams) + ')'];
+    if (tot.extra) lines.push('Shipping and fees: ' + m(tot.extra) + ', split ' + (split === 'cost' ? 'by item cost' : split === 'weight' ? 'by estimated weight' : 'evenly'), 'Total: ' + m(tot.total));
     lines.push('');
     for (const r of tot.rows) lines.push(r.name + ': ' + approx(r.yuan, r.items) + (tot.extra ? ' + ' + m(r.share) + ' = ' + m(r.owes) : '') + ' (' + r.count + (r.count === 1 ? ' item' : ' items') + (r.unpriced ? ', ' + r.unpriced + ' without a price' : '') + ')');
     if (cur !== 'CNY') lines.push('', 'Converted at today’s rate. The agent’s own rate and fees decide the final amounts.');
@@ -836,6 +916,7 @@
 
     $('#g-body').hidden = !friends.length;
     $('#g-empty').hidden = !!friends.length || !!liveNow();
+    $('#view-group').classList.toggle('has-haul', friends.length > 0);
     if (!friends.length) {
       // Nothing of the last haul stays behind in the page.
       $('#g-people').replaceChildren();
@@ -844,25 +925,28 @@
     }
 
     const people = groupPeople();
-    const tot = U.groupTotals(people, data.rates, s.currency, g.extra || 0, g.split);
+    const tot = U.groupTotals(people, data.rates, s.currency, g.extra || 0, g.split, s);
     const m = (n) => (n == null ? '?' : U.money(n, s.currency));
-    $('#g-sum').textContent = U.yuan(tot.yuan) + (s.currency !== 'CNY' ? ' ≈ ' + m(tot.items) : '');
-    $('#g-sum-note').textContent = tot.count + (tot.count === 1 ? ' item' : ' items') + ' · ' + people.length + (people.length === 1 ? ' person' : ' people') +
-      (tot.extra ? ' · with ' + m(tot.extra) + ' shipping and fees: ' + m(tot.total) : '') + (tot.unpriced ? ' · ' + tot.unpriced + ' without a price' : '');
+    const itemsCost = U.yuan(tot.yuan) + (s.currency !== 'CNY' ? ' ≈ ' + m(tot.items) : '');
+    const withShipping = !!tot.extra && tot.total != null;
+    $('#g-sum').textContent = withShipping ? m(tot.total) : itemsCost;
+    $('#g-sum-note').textContent = (withShipping ? 'Items ' + itemsCost + ' + shipping and fees ' + m(tot.extra) + ' · ' : '') + tot.count + (tot.count === 1 ? ' item' : ' items') + ' · ~' + U.kg(tot.grams) + ' · ' + people.length + (people.length === 1 ? ' person' : ' people') +
+      (tot.unpriced ? ' · ' + tot.unpriced + ' without a price' : '');
     $('#g-cur').textContent = s.currency;
     const extra = $('#g-extra');
     if (extra !== document.activeElement) extra.value = g.extra ? String(g.extra) : '';
-    $('#g-split').value = g.split === 'cost' ? 'cost' : 'even';
+    $('#g-split').value = g.split === 'cost' || g.split === 'weight' ? g.split : 'even';
     const mine = $('#g-mine');
     if (mine !== document.activeElement) {
       fillSelect(mine, [['*', 'Everything not bought yet']].concat(data.folders.map((f) => ['f:' + f, 'Folder: ' + f]), [['', 'Leave mine out']]), g.mine === '' ? '' : g.mine && g.mine !== '*' ? 'f:' + g.mine : '*');
     }
 
     $('#g-rows').replaceChildren(...tot.rows.map((r) => h('tr', {},
-      h('td', {}, h('b', {}, r.name), h('small', {}, r.count + (r.count === 1 ? ' item' : ' items') + (r.unpriced ? ' · ' + r.unpriced + ' no price' : ''))),
-      h('td', {}, U.yuan(r.yuan), s.currency !== 'CNY' ? h('small', {}, '≈ ' + m(r.items)) : null),
+      h('td', {}, h('b', {}, r.name), h('small', {}, r.count + (r.count === 1 ? ' item' : ' items') + ' · ~' + U.kg(r.grams) + (r.unpriced ? ' · ' + r.unpriced + ' no price' : ''))),
+      h('td', {}, U.yuan(r.yuan), s.currency !== 'CNY' && tot.extra ? h('small', {}, '≈ ' + m(r.items)) : null),
       h('td', {}, tot.extra ? '+ ' + m(r.share) : '–'),
       h('td', { class: 'owes' }, m(r.owes)))));
+    $('#g-table').classList.toggle('no-share', !tot.extra);
     $('#g-rate-note').textContent = s.currency === 'CNY' ? '' : 'Converted at today’s rate (' + s.currency + '). Your agent’s own rate and fees decide the final amounts.';
     $('#g-cart').textContent = running ? 'Adding…' : 'Add everything to cart';
     $('#g-cart').disabled = running;
@@ -1195,6 +1279,7 @@
 
   function show(name) {
     view.name = name;
+    document.body.classList.toggle('in-setup', name === 'setup');
     for (const sec of $$('main > section')) sec.hidden = sec.id !== 'view-' + name;
     for (const b of $$('.tabs button')) {
       b.classList.toggle('on', b.dataset.view === name);
@@ -1226,7 +1311,7 @@
     $('#q-agent').addEventListener('change', (e) => pickAgent(e.target.value));
     $('#pick-grid').replaceChildren(
       ...Object.entries(L.AGENTS).filter(([k]) => k !== 'custom').map(([k, a]) => h('button', { type: 'button', onclick: () => pickAgent(k) }, a.name)),
-      h('button', { type: 'button', onclick: () => pickAgent('custom') }, 'A different one…'));
+      h('button', { type: 'button', onclick: () => pickAgent('custom') }, 'Other…'));
     $('#theme-toggle').addEventListener('click', () => patch({ theme: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' }));
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
     $('#cart-summary-close').addEventListener('click', () => chrome.storage.local.remove('cartRun'));
@@ -1246,6 +1331,11 @@
     $('#search').addEventListener('input', (e) => { view.q = e.target.value; view.limit = 120; renderList(); });
     $('#sort').addEventListener('change', (e) => { view.sort = e.target.value; try { localStorage.setItem('rhSort', view.sort); } catch (_) { /* private mode */ } renderList(); });
     $('#f-status').addEventListener('change', (e) => { view.status = e.target.value; renderList(); });
+    $('#filters-clear').addEventListener('click', () => {
+      view.status = view.tag = view.seller = '';
+      $('#filters').open = false;
+      renderList();
+    });
     $('#f-tag').addEventListener('change', (e) => { view.tag = e.target.value; renderList(); });
     $('#f-seller').addEventListener('change', (e) => { view.seller = e.target.value; renderList(); });
     $('#clear-filters').addEventListener('click', () => {
@@ -1303,6 +1393,7 @@
     });
     $('#bulk-clear').addEventListener('click', () => { view.selected.clear(); renderList(); });
     $('#bulk-cart').addEventListener('click', () => startCart(scope().list));
+    $('#bulk-mark').addEventListener('click', () => markAs(scope().list.map((it) => it.key), 'carted', { all: true }));
     $('#bulk-delete').addEventListener('click', (e) => {
       const keys = visible().filter((it) => view.selected.has(it.key)).map((it) => it.key);
       if (!keys.length) return;
@@ -1333,6 +1424,13 @@
         gv.box = 'share';
         show('group');
         return;
+      }
+      if (act === 'mark') {
+        const go = () => {
+          close();
+          markAs(list.map((it) => it.key), 'carted', { all: true });
+        };
+        return !view.selected.size && list.length > 5 ? confirmClick(btn, 'Mark all ' + list.length + ' shown? Click again', go) : go();
       }
       if (act === 'cart') {
         // With nothing ticked this would run over everything shown, so a long list asks once more.
@@ -1466,7 +1564,7 @@
     });
     $('#g-summary').addEventListener('click', () => {
       const g = data.group || {};
-      copy(groupSummary(U.groupTotals(groupPeople(), data.rates, data.settings.currency, g.extra || 0, g.split), g.split), 'who owes what');
+      copy(groupSummary(U.groupTotals(groupPeople(), data.rates, data.settings.currency, g.extra || 0, g.split, data.settings), g.split), 'who owes what');
     });
     $('#g-run-skip').addEventListener('click', () => step(1));
     $('#g-run-stop').addEventListener('click', () => send({ type: 'queue', op: 'stop' }));
@@ -1551,6 +1649,12 @@
         show('list');
       }
     });
+    for (const id of ['#add-cart', '#empty-cart']) {
+      $(id).addEventListener('click', async () => {
+        const r = await send({ type: 'importCartTab' });
+        if (r && r.ok) toast('Opening your Superbuy cart. RepHop copies it in once it shows.');
+      });
+    }
     $('#add-tab').addEventListener('click', async () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
       if (!tab || !tab.url) return toast('RepHop can only see product pages. Open one, or use the button in its corner.', { error: true });

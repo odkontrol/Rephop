@@ -645,10 +645,10 @@ test('every part of RepHop knows which build it is', () => {
 const V = require('../lib/live.js');
 
 test('an invite carries where the haul is and the key to read it, and survives a chat message', () => {
-  const live = { relay: 'https://rephop-relay.example.workers.dev', room: V.rand(16), key: V.rand(32), secret: V.rand(24), name: '  Ahmed ' };
+  const live = { relay: 'https://rephop-relay.example.workers.dev', room: V.rand(16), key: V.rand(32), secret: V.rand(24), name: '  Jordan ' };
   const invite = V.makeInvite(live);
   assert.match(invite, /^RHL1\.[A-Za-z0-9_-]+$/);
-  assert.deepEqual(V.readInvite('yo, join my haul:\n' + invite + '\nsee you'), { relay: live.relay, room: live.room, key: live.key, name: 'Ahmed' });
+  assert.deepEqual(V.readInvite('yo, join my haul:\n' + invite + '\nsee you'), { relay: live.relay, room: live.room, key: live.key, name: 'Jordan' });
   assert.ok(!Buffer.from(invite.slice(5), 'base64url').toString().includes(live.secret), 'the host\'s own secret never travels');
   // things that are not invites
   assert.equal(V.readInvite('hello'), null);
@@ -689,4 +689,173 @@ test('the built-in relay is a proper relay address', () => {
   assert.equal(V.relayUrl(U.DEFAULT_RELAY), U.DEFAULT_RELAY);
   assert.match(U.DEFAULT_RELAY, /^https:\/\//);
   assert.equal(U.mergeSettings().relay, '', 'your own relay is empty until you enter one');
+});
+
+// A real Weidian listing (NB 9060, October 2026): the seller's colours in Chinese, and the agent's translation in another order.
+const NB_SELLER = ['暗紫色U9060BCG', '米蓝色U9060WCG', '浅灰色U9060MAC', '浅灰色U9060GRY', '白粉蓝 U9060NB9', '黑咖啡色U9060BRN', '黑白U9060AAA', 'U9060GBN', '白绿U9060NBN', '黑色U9060BLK'];
+const NB_AGENT = ['Beige U9060WCG', 'Navy blue U9060IND', 'Black brown U9060BRN', 'Light gray U9060GRY', 'White-green U9060NBN', 'U9060GBN', 'White powder blue U9060NB9', 'Black U9060BLK', 'Light Gray U9060MAC', 'Dark purple U9060BCG', 'Black and white U9060AAA'];
+
+test('a colour picked in the seller\'s Chinese is found on the agent\'s listing by its model code, in any order', () => {
+  const opts = NB_AGENT.map((text) => ({ text }));
+  assert.equal(NB_AGENT[U.pickRemembered(opts, '暗紫色U9060BCG')], 'Dark purple U9060BCG');
+  assert.equal(NB_AGENT[U.pickRemembered(opts, '浅灰色U9060MAC')], 'Light Gray U9060MAC', 'two light greys: the code tells them apart');
+  assert.equal(NB_AGENT[U.pickRemembered(opts, '浅灰色U9060GRY')], 'Light gray U9060GRY');
+  assert.equal(NB_AGENT[U.pickRemembered(opts, '白粉蓝 U9060NB9')], 'White powder blue U9060NB9');
+  assert.equal(NB_AGENT[U.pickRemembered(opts, 'U9060GBN')], 'U9060GBN');
+  // and the other way: a pick in the agent's English, against the seller's rows
+  const seller = NB_SELLER.map((text) => ({ text }));
+  assert.equal(NB_SELLER[U.pickRemembered(seller, 'Black brown U9060BRN')], '黑咖啡色U9060BRN');
+  // what must never match
+  assert.equal(U.pickRemembered(opts, '砖红色U9060TRU'), -1, 'a code the agent does not list');
+  assert.equal(U.pickRemembered([{ text: 'Black 2024 new' }, { text: 'White' }], '白色 2024新款'), -1, 'a year is not a model code');
+  assert.equal(U.pickRemembered([{ text: 'Black U9060BLK' }, { text: 'White U9060BLK' }], '黑色U9060BLK'), -1, 'the same code twice: no guess');
+  assert.equal(U.codeOf('黑色'), '');
+  assert.equal(U.codeOf('暗紫色U9060BCG'), 'u9060bcg');
+});
+
+test('Add to cart settles a Chinese pick on the agent\'s translated, reordered row', () => {
+  const groups = [{ name: 'Size', options: ['42', '43', '45'].map((text) => ({ text })) }, { name: 'NB9060', options: NB_AGENT.map((text) => ({ text })) }];
+  const plan = U.planCart(groups, { options: [{ n: 'NB9060', v: '浅灰色U9060MAC' }, { n: '尺码', v: '45' }], source: [{ n: 'NB9060', o: NB_SELLER }, { n: '尺码', o: ['40', '45', '42', '43'] }] });
+  assert.equal(groups[1].options[plan.rows[1].pick].text, 'Light Gray U9060MAC');
+  assert.equal(groups[0].options[plan.rows[0].pick].text, '45');
+  assert.deepEqual(plan.unused, []);
+});
+
+test('other picks from the same listing are cleaned, counted, shared and synced', () => {
+  const more = U.cleanMore([{ id: 'ab12cd', options: [{ n: 'Color', v: 'Navy trousers' }], qty: '2', status: 'carted' }, { id: 'x' }, { id: 'ab12cd' }, { id: 'zz99zz', status: 'nonsense' }]);
+  assert.deepEqual(more.map((p) => [p.id, p.qty, p.status]), [['ab12cd', 2, 'carted'], ['zz99zz', 1, 'saved']]);
+  assert.equal(U.totalQty({ qty: 1, more }), 4);
+  assert.equal(U.cleanMore(Array.from({ length: 20 }, (_, i) => ({ id: 'pick' + i }))).length, U.MAX_MORE);
+  const it = { key: 'taobao:1036519107016', platform: 'taobao', id: '1036519107016', title: 'Lamb fleece set', price: 199, qty: 1, options: [{ n: 'Color', v: 'Navy shirt' }, { n: 'Size', v: 'M' }], more: [{ id: 'ab12cd', options: [{ n: 'Color', v: 'Navy trousers' }, { n: 'Size', v: 'M' }], qty: 1, status: 'saved' }], updatedAt: 5 };
+  const share = U.packShare('Jordan', [it], U.mergeSettings(), '');
+  assert.deepEqual(share.items.map((e) => e.o.map((x) => x[1]).join('/')), ['Navy shirt/M', 'Navy trousers/M'], 'each pick is its own entry in a share code');
+  const packed = U.packSync({ [it.key]: it }, {});
+  const back = U.unpackSync(packed.chunks)[0];
+  const local = { [it.key]: Object.assign({}, it, { more: undefined, updatedAt: 1 }) };
+  U.mergeSync(local, {}, [back]);
+  assert.deepEqual(local[it.key].more, it.more, 'other picks reach your other computers');
+});
+
+test('each choice can carry its picture, and the card shows the colourway you picked', () => {
+  assert.equal(U.choiceImage('//img.alicdn.com/bao/uploaded/i1/abc.jpg_30x30.jpg'), 'https://img.alicdn.com/bao/uploaded/i1/abc.jpg');
+  assert.equal(U.choiceImage('https://si.geilicdn.com/x.jpg?w=30&h=30'), 'https://si.geilicdn.com/x.jpg?w=30&h=30', 'other hosts: the list asks for its own size');
+  assert.equal(U.choiceImage('javascript:alert(1)'), '');
+  assert.equal(U.choiceImage('http://insecure.example/x.jpg'), '');
+  // pictures stay with their choices when doubles are dropped, and a row without pictures has no `i`
+  const rows = U.cleanChoices([{ n: 'Color', o: ['Black', 'Black', 'White'], i: ['https://p/b.jpg', 'https://p/dup.jpg', 'https://p/w.jpg'] }, { n: 'Size', o: ['S', 'M'] }]);
+  assert.deepEqual(rows, [{ n: 'Color', o: ['Black', 'White'], i: ['https://p/b.jpg', 'https://p/w.jpg'] }, { n: 'Size', o: ['S', 'M'] }]);
+  const set = { choices: [{ n: 'Color', o: ['Navy shirt', 'Navy trousers'], i: ['https://p/shirt.jpg', 'https://p/trousers.jpg'] }, { n: 'Size', o: ['S', 'M'] }],
+    options: [{ n: 'Color', v: 'Navy shirt' }, { n: 'Size', v: 'M' }] };
+  assert.equal(U.pickImage(set, null, null), 'https://p/shirt.jpg');
+  assert.equal(U.pickImage(set, { options: [{ n: 'Color', v: 'Navy trousers' }] }, null), 'https://p/trousers.jpg', 'each pick shows its own colour');
+  assert.equal(U.pickImage(set, { options: [] }, null), '', 'nothing picked: no colour picture');
+  // the agent shows text only: the seller's picture of the same colourway, found by its model code
+  const nb = { choices: [{ n: 'NB9060', o: ['Beige U9060WCG', 'Light Gray U9060MAC'] }], options: [{ n: 'NB9060', v: 'Light Gray U9060MAC' }],
+    wd: [{ n: 'NB9060', o: ['米蓝色U9060WCG', '浅灰色U9060MAC'], i: ['https://p/wcg.jpg', 'https://p/mac.jpg'] }] };
+  assert.equal(U.pickImage(nb, null, null), 'https://p/mac.jpg');
+});
+
+test('the card picture comes from the colour row, not from sizes that all show the same photo', () => {
+  const pink = 'https://p/pink.jpg';
+  const xa = { choices: [{ n: 'Size', o: ['44', '45', '46'], i: [pink, pink, pink] }, { n: 'Style/Color', o: ['3XL Grey Red 1219', '3XL All Black 1010'], i: ['https://p/greyred.jpg', 'https://p/black.jpg'] }, { n: 'Batch', o: ['XA'] }],
+    options: [{ n: 'Size', v: '45' }, { n: 'Style/Color', v: '3XL All Black 1010' }, { n: 'Batch', v: 'XA' }] };
+  assert.equal(U.pickImage(xa, null, null), 'https://p/black.jpg');
+  // with only a size row that does tell the photos apart, that is still used
+  assert.equal(U.pickImage({ choices: [{ n: 'Size', o: ['44', '45'], i: ['https://p/a.jpg', 'https://p/b.jpg'] }], options: [{ n: 'Size', v: '45' }] }, null, null), 'https://p/b.jpg');
+});
+
+// A flat test picture: a coloured block (the item) on a background, as RGBA pixels at U.PIC x U.PIC.
+function picture(bg, fg, scale) {
+  const N = U.PIC;
+  const px = new Uint8ClampedArray(N * N * 4);
+  const lo = Math.round(N * (0.5 - scale / 2));
+  const hi = Math.round(N * (0.5 + scale / 2));
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const inside = x >= lo && x < hi && y >= lo && y < hi;
+      const c = inside ? fg : bg;
+      const i = (y * N + x) * 4;
+      // a few horizontal lines on the item, like quilting
+      const line = inside && y % 6 === 0 ? 30 : 0;
+      px[i] = Math.max(0, c[0] - line); px[i + 1] = Math.max(0, c[1] - line); px[i + 2] = Math.max(0, c[2] - line); px[i + 3] = 255;
+    }
+  }
+  return px;
+}
+
+test('pictures of the same item look alike whatever the background; a different colour does not', () => {
+  const N = U.PIC;
+  const greyOnFloor = U.imageFeatures(picture([190, 110, 50], [150, 152, 156], 0.6), N, N);
+  const greyOnWhite = U.imageFeatures(picture([245, 245, 245], [148, 150, 155], 0.55), N, N);
+  const beigeOnFloor = U.imageFeatures(picture([190, 110, 50], [215, 195, 160], 0.6), N, N);
+  const sameItem = U.imageSimilarity(greyOnFloor, greyOnWhite);
+  const otherItem = U.imageSimilarity(greyOnFloor, beigeOnFloor);
+  assert.ok(sameItem > otherItem + 0.1, 'grey vs grey ' + sameItem.toFixed(3) + ', grey vs beige on the same floor ' + otherItem.toFixed(3));
+  assert.ok(Math.abs(U.imageSimilarity(greyOnFloor, greyOnFloor) - 1) < 1e-9);
+  assert.equal(U.imageSimilarity(greyOnFloor, null), null);
+});
+
+test('the photo\'s item: the closest pictures first, the post\'s order only as a tie-breaker', () => {
+  // clearly closest: sure
+  assert.deepEqual(U.rankPhotoLinks([0.5, 0.71, 0.52], 0, 3, 3), { order: [1, 0, 2], sure: true, byOrder: false });
+  // too close to call: not sure, still the closest first
+  const close = U.rankPhotoLinks([0.60, 0.605, 0.2], 2, 4, 3);
+  assert.equal(close.order[0], 1);
+  assert.equal(close.sure, false);
+  // no pictures to compare: the photo's place in the post, after a first photo of everything
+  assert.deepEqual(U.rankPhotoLinks(null, 2, 4, 3), { order: [1, 0, 2], sure: false, byOrder: true });
+  // photos and links that do not line up: just the post's order
+  assert.deepEqual(U.rankPhotoLinks(null, 2, 9, 3), { order: [0, 1, 2], sure: false, byOrder: false });
+  // links without pictures go after the compared ones
+  assert.deepEqual(U.rankPhotoLinks([null, 0.4, 0.7], 0, 3, 3).order, [2, 1, 0]);
+});
+
+test('each item\'s weight is estimated from its type, in English or Chinese, unless you set it', () => {
+  const S = U.mergeSettings();
+  const w = (label, extra) => U.weightOf(Object.assign({ label }, extra), S);
+  assert.deepEqual([w('CP Hooded Padded Jacket').g, w('Patagonia Fleece Jacket').g, w('Heavyweight tee').g, w('Washed black hoodie').g], [1300, 700, 250, 700]);
+  assert.equal(w('ACG连帽棉服保暖户外面包服').label, 'Puffer jacket');
+  assert.equal(w('Grey suede runners').label, 'Sneakers', '"runners" are shoes');
+  assert.equal(w('Jordan hoodie').label, 'Hoodie', 'the garment wins over the brand');
+  assert.equal(w('Something else').g, 500);
+  assert.deepEqual(w('Anything', { weight: 845 }), { g: 845, label: 'your weight', own: true });
+  assert.equal(U.weightOf({ label: 'NB 9060 running shoes' }, Object.assign({}, S, { shoeBoxes: false })).g, 850, 'without the box');
+  assert.deepEqual([U.kg(700), U.kg(1250), U.kg(12430)], ['0.7 kg', '1.25 kg', '12.4 kg']);
+});
+
+test('group hauls add up everyone\'s weight and can split shipping by it', () => {
+  const people = [
+    { id: '', name: 'Jordan', items: [{ title: 'Puffer jacket', price: 300, qty: 1 }, { title: 'Tee', price: 50, qty: 2 }] }, // 1300 + 500
+    { id: 'sam', name: 'Sam', items: [{ title: 'Hoodie', price: 200, qty: 1, weight: 1200 }] }, // your own figure
+  ];
+  const tot = U.groupTotals(people, { rates: { CNY: 1 } }, 'CNY', 30, 'weight', U.mergeSettings());
+  assert.deepEqual(tot.rows.map((r) => r.grams), [1800, 1200]);
+  assert.equal(tot.grams, 3000);
+  assert.deepEqual(tot.rows.map((r) => r.share), [18, 12]);
+  // a weight you set travels in share codes and sync
+  const it = { key: 'weidian:7000000001', platform: 'weidian', id: '7000000001', title: 'Hoodie', price: 100, qty: 1, weight: 950, updatedAt: 5 };
+  assert.equal(U.unpackShare(U.packShare('Jordan', [it], U.mergeSettings(), '')).items[0].weight, 950);
+  const back = U.unpackSync(U.packSync({ [it.key]: it }, {}).chunks)[0];
+  const local = { [it.key]: Object.assign({}, it, { weight: undefined, updatedAt: 1 }) };
+  U.mergeSync(local, {}, [back]);
+  assert.equal(local[it.key].weight, 950);
+});
+
+test('an agent cart line\'s choices are read whatever spaces the names and values hold', () => {
+  const o = (t, names) => U.skuOptions(t, names).map((x) => x.n + '=' + x.v);
+  // lines from a real Superbuy cart (October 2026)
+  assert.deepEqual(o('size:M Color:Navy shirt '), ['size=M', 'Color=Navy shirt']);
+  assert.deepEqual(o('NB9060:Light Gray U9060MAC size:45 '), ['NB9060=Light Gray U9060MAC', 'size=45']);
+  assert.deepEqual(o('Style/Color:3XL All Black 1010 size:45 version:XA '), ['Style/Color=3XL All Black 1010', 'size=45', 'version=XA']);
+  assert.deepEqual(o('version:M match colors:XT-6 Wren Brown 473058 Code number:45 '), ['version=M', 'match colors=XT-6 Wren Brown 473058', 'Code number=45']);
+  assert.deepEqual(o('size:One size Color:Black'), ['size=One size', 'Color=Black'], 'a value may end in a word that is also a row name');
+  assert.deepEqual(o('颜色分类:黑色;尺码:XL'), ['颜色分类=黑色', '尺码=XL']);
+  assert.deepEqual(o('Fit:Loose cut Leg opening:Wide'), ['Fit=Loose cut Leg', 'opening=Wide'], 'an unknown two-word name is taken as one word…');
+  assert.deepEqual(o('Fit:Loose cut Leg opening:Wide', ['Fit', 'Leg opening']), ['Fit=Loose cut', 'Leg opening=Wide'], '…unless the listing\'s own rows say otherwise');
+  assert.deepEqual(o('Black M'), ['=Black M']);
+  assert.deepEqual(o(''), []);
+  assert.equal(U.yuanFrom('CN ￥300.00'), 300);
+  assert.equal(U.yuanFrom('￥1,299.50'), 1299.5);
+  assert.equal(U.yuanFrom('US $ 41.20'), null, 'another currency is not a price in yuan');
+  assert.equal(U.yuanFrom('JP ￥ 5000'), null, 'nor is yen');
 });

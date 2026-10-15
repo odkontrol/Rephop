@@ -1,0 +1,15 @@
+Third-party files bundled with RepHop
+
+tf.min.js
+  TensorFlow.js 4.20.0, https://github.com/tensorflow/tfjs
+  Copyright 2024 Google LLC. Licensed under the Apache License, Version 2.0:
+  https://www.apache.org/licenses/LICENSE-2.0
+
+mobilenet/ (model.json, group1-shard1of1.bin)
+  MobileNet V2 (depth multiplier 0.5, 224 x 224), image feature vector, TensorFlow.js format,
+  from TensorFlow Hub (imagenet/mobilenet_v2_050_224/feature_vector/3).
+  Copyright Google LLC. Licensed under the Apache License, Version 2.0:
+  https://www.apache.org/licenses/LICENSE-2.0
+
+RepHop uses them only on your computer, to compare a photo in a Reddit gallery with the
+pictures of the products linked in that post. No picture is sent anywhere for this.

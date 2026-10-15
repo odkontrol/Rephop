@@ -141,7 +141,10 @@ async function fetchWeidian(id) {
   const out = { state: r.itemStock === 0 ? 'soldout' : 'ok', title: String(r.itemTitle).trim(), image: r.itemMainPic || '' };
   if (typeof cents === 'number' && cents > 0) out.price = cents / 100;
   // The rows of choices (colour, size…) in the seller's own words. The list shows them as drop-downs.
-  out.choices = U.cleanChoices((Array.isArray(r.attrList) ? r.attrList : []).map((a) => ({ n: a && a.attrTitle, o: Array.isArray(a && a.attrValues) ? a.attrValues.map((v) => v && v.attrValue) : [] })));
+  out.choices = U.cleanChoices((Array.isArray(r.attrList) ? r.attrList : []).map((a) => {
+    const values = Array.isArray(a && a.attrValues) ? a.attrValues : [];
+    return { n: a && a.attrTitle, o: values.map((v) => v && v.attrValue), i: values.map((v) => v && v.img) };
+  }));
   out.choicesFrom = 'weidian';
   return out;
 }
@@ -836,7 +839,7 @@ async function saveEntries(entries, folder) {
   return stats;
 }
 
-const EDITABLE = ['customTitle', 'label', 'note', 'tags', 'folder', 'status', 'qty', 'price', 'kind', 'size', 'style', 'options'];
+const EDITABLE = ['customTitle', 'label', 'note', 'tags', 'folder', 'status', 'qty', 'price', 'kind', 'size', 'style', 'options', 'weight'];
 
 function updateItems(keys, patch) {
   return mutateItems((items) => {
@@ -857,6 +860,14 @@ function updateItems(keys, patch) {
         if (f === 'status' && !U.STATUSES[v]) continue;
         if (f === 'kind' && v && !U.KINDS[v] && v !== 'other') continue;
         if (f === 'options') v = U.cleanOptions(v);
+        if (f === 'weight') {
+          // grams for one piece; empty goes back to RepHop's estimate
+          v = parseInt(v, 10);
+          if (!(v > 0 && v <= 30000)) {
+            delete it.weight;
+            continue;
+          }
+        }
         if (typeof v === 'string') v = v.trim().slice(0, f === 'note' ? 2000 : f === 'size' || f === 'style' ? 40 : 200);
         if ((f === 'kind' || f === 'size' || f === 'style') && !v) delete it[f];
         else if (f === 'options' && !v.length) delete it.options;
@@ -975,6 +986,8 @@ function sanitizeItem(raw) {
   if (wd.length) it.wd = wd;
   const more = U.cleanMore(raw.more);
   if (more.length) it.more = more;
+  const weight = parseInt(raw.weight, 10);
+  if (weight > 0 && weight <= 30000) it.weight = weight;
   return it;
 }
 
@@ -1043,7 +1056,7 @@ async function setFolders(list, renames) {
 
 // -------------------------------------------------- lookups for page badges
 
-async function lookup(keys) {
+async function lookup(keys, detail) {
   const data = await chrome.storage.local.get(['items', 'seen', 'sellers', 'previews']);
   const items = data.items || {};
   const seen = data.seen || {};
@@ -1063,6 +1076,8 @@ async function lookup(keys) {
       info.itemKey = ik;
       if (it.status !== 'saved') info.status = it.status;
       if (it.check && it.check.state !== 'ok') info.state = it.check.state;
+      // The listing you are on: every pick from it, for the bar's list of what is in the cart.
+      if (key === detail) info.picks = itemPicks(it);
     }
     if ((it && it.viewedAt) || (s && s.v)) info.viewed = true;
     if (s && s.p && s.p.length > 1) info.mentions = s.p.length;
@@ -1070,6 +1085,367 @@ async function lookup(keys) {
     if (Object.keys(info).length) out[key] = info;
   }
   return out;
+}
+
+// ----------------------------------------------- gallery photos and their links
+// A Reddit gallery photo with no link of its own: the page asks which of the post's links it shows. These
+// give it each link's name, price and pictures, the pictures' bytes (the page cannot read pictures from
+// other sites itself), and the matcher, which is put into the tab only when it is asked for.
+
+/** For each link (up to 25): { key, title, price, image, pics } from what RepHop knows or looks up. */
+async function photoInfo(m) {
+  const urls = Array.isArray(m.urls) ? m.urls.filter((u) => typeof u === 'string').slice(0, 25) : [];
+  const list = await pool(urls, 3, async (url) => {
+    const target = L.parseLink(url);
+    if (!target) return null;
+    const res = await resolveLink(target, false, { hover: true }).catch(() => null);
+    if (!res || !res.ok) return { key: target.key, title: '', price: null, image: '', pics: [] };
+    const key = res.item.key;
+    const p = Object.assign({}, res.meta, (await getPreview(key).catch(() => null)) || {});
+    const pics = [];
+    for (const u of [p.image].concat(...U.cleanChoices(p.choices).map((c) => c.i || []))) {
+      const url2 = U.choiceImage(u);
+      if (url2 && !pics.includes(url2)) pics.push(url2);
+      if (pics.length >= 4) break;
+    }
+    return { key, title: p.titleEn || p.title || '', price: typeof p.price === 'number' ? p.price : null, image: p.image || '', pics };
+  });
+  return { ok: true, list };
+}
+
+/** The bytes of up to 12 pictures, as base64: [{ b64, type }] (null for one that could not be read). */
+async function fetchPics(m) {
+  const urls = Array.isArray(m.urls) ? m.urls.filter((u) => typeof u === 'string').slice(0, 12) : [];
+  const list = await pool(urls, 4, async (raw) => {
+    const u = L.toUrl(raw);
+    if (!u || u.protocol !== 'https:') return null;
+    // Small copies where the host makes them; otherwise the picture as it is (never more than 3 MB).
+    const url = L.hostMatches(u.hostname, ['geilicdn.com']) ? U.thumbUrl(u.href, 240) : u.href;
+    try {
+      const res = await fetch(url, { credentials: 'omit', cache: 'force-cache', signal: AbortSignal.timeout(15000) });
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || !/^image\//.test(type)) return null;
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.length > 3e6) return null;
+      let bin = '';
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      return { b64: btoa(bin), type };
+    } catch (_) {
+      return null;
+    }
+  });
+  return { ok: true, list };
+}
+
+/** Put the matcher (the image model and its code) into the tab that asks for it. */
+async function loadMatcher(sender) {
+  if (!sender.tab) return { ok: false };
+  await chrome.scripting.executeScript({ target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] }, files: ['content/match-pre.js', 'lib/vendor/tf.min.js', 'content/match.js'] });
+  return { ok: true };
+}
+
+/** An item's picks in one list: the first (id '') and the others. */
+function itemPicks(it) {
+  return [{ id: '', options: it.options || [], qty: it.qty || 1, status: it.status || 'saved', img: U.pickImage(it, null, null) }]
+    .concat(U.cleanMore(it.more).map((p) => ({ id: p.id, options: p.options, qty: p.qty, status: p.status, img: U.pickImage(it, p, null) })));
+}
+
+/** Two sets of choices are the same pick when every row both name holds the same choice (in either language). */
+function samePick(a, b) {
+  const x = U.cleanOptions(a);
+  const y = U.cleanOptions(b);
+  if (!x.length || !y.length) return false;
+  const norm = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  let compared = 0;
+  for (const o of x) {
+    const other = y.find((p) => norm(p.n) === norm(o.n)) || (x.length === 1 && y.length === 1 ? y[0] : null);
+    if (!other) continue;
+    compared++;
+    if (norm(o.v) !== norm(other.v) && U.pickRemembered([{ text: other.v }], o.v) !== 0) return false;
+  }
+  return compared > 0 && compared === Math.min(x.length, y.length);
+}
+
+/**
+ * You pressed the agent's own Add To Cart on a listing in your list. What you had chosen there is marked as in
+ * the cart: the pick it matches, or the first pick if that one was still to add; anything else becomes a new pick,
+ * so a second colour never replaces the first.
+ */
+function cartByHand(m) {
+  const picked = U.cleanOptions(m.options);
+  return mutateItems((items) => {
+    const k = findKey(items, String(m.key || ''));
+    const it = k && items[k];
+    if (!it) return SKIP;
+    const more = U.cleanMore(it.more);
+    const now = Date.now();
+    if (!picked.length || samePick(it.options || [], picked)) {
+      if (it.status === 'carted' || it.status === 'bought') return SKIP;
+      it.status = 'carted';
+      if (picked.length) it.options = picked;
+      it.updatedAt = now;
+      return { ok: true, pick: '', was: 'saved' };
+    }
+    const match = more.find((p) => samePick(p.options, picked));
+    if (match) {
+      if (match.status === 'carted' || match.status === 'bought') return SKIP;
+      match.status = 'carted';
+      match.options = picked;
+      it.more = more;
+      it.updatedAt = now;
+      return { ok: true, pick: match.id, was: 'saved' };
+    }
+    if (it.status === 'saved' && !more.length) {
+      // Nothing was added from this listing yet: what you chose is the item's own pick.
+      it.status = 'carted';
+      it.options = picked;
+      it.updatedAt = now;
+      return { ok: true, pick: '', was: 'saved' };
+    }
+    if (more.length >= U.MAX_MORE) return SKIP;
+    const id = Math.random().toString(36).slice(2, 10).padEnd(6, '0');
+    more.push({ id, options: picked, qty: 1, status: 'carted' });
+    it.more = more;
+    it.updatedAt = now;
+    return { ok: true, pick: id, was: 'new' };
+  });
+}
+
+// ------------------------------------------------------------- the agent's cart
+// The lines of Superbuy's cart page, read there by the content script. Each one is saved like any other link (the
+// listing it came from), then its pick is marked in cart with the choices and quantity from the cart, so a haul put
+// together at the agent shows up in the list without saving it all again by hand. Doing it twice changes nothing.
+const CART_PAGE = 'https://www.superbuy.com/en/page/shoppingcart/';
+
+function cleanCartRow(r) {
+  if (!r || typeof r !== 'object' || typeof r.url !== 'string' || r.url.length > 2000) return null;
+  const parsed = L.parseLink(r.url);
+  if (!parsed || parsed.kind !== 'item') return null;
+  const s = (v, n) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
+  const price = r.price == null || r.price === '' ? NaN : Number(r.price);
+  let image = s(r.image, 500);
+  if (image.startsWith('//')) image = 'https:' + image;
+  return {
+    url: r.url, key: parsed.key, title: s(r.title, 200), sku: s(r.sku, 400), note: s(r.note, 300),
+    qty: Math.max(1, Math.min(99, parseInt(r.qty, 10) || 1)),
+    price: price >= 0 && price < 1e7 ? price : null,
+    image: /^https:\/\/[^\s"'<>]+$/.test(image) ? image : '',
+  };
+}
+
+async function importCartTab() {
+  const tab = await chrome.tabs.create({ url: CART_PAGE, active: true });
+  await chrome.storage.session.set({ cartImport: { tabId: tab.id, at: Date.now() } });
+  return { ok: true };
+}
+
+function agentNameFor(host) {
+  for (const a of Object.values(L.AGENTS)) {
+    const u = a.template && L.toUrl(a.template.replace(/\{[^}]+\}/g, 'x'));
+    if (u && L.hostMatches(String(host || ''), [u.hostname.replace(/^www\./, '')])) return a.name;
+  }
+  return '';
+}
+
+async function importCart(m, s) {
+  if (s && s.tab) {
+    const ci = (await chrome.storage.session.get('cartImport')).cartImport;
+    if (ci && ci.tabId === s.tab.id) await chrome.storage.session.remove('cartImport');
+  }
+  const site = typeof m.site === 'string' ? m.site.slice(0, 60) : '';
+  const name = agentNameFor(site) || 'agent';
+  const page = L.toUrl(m.cartUrl);
+  const cartUrl = page && site && L.hostMatches(page.hostname.replace(/^www\./, ''), [site]) ? page.href.slice(0, 400) : CART_PAGE;
+  const rows = (Array.isArray(m.rows) ? m.rows : []).slice(0, 300).map(cleanCartRow).filter(Boolean);
+  const unread = Math.max(0, (Array.isArray(m.rows) ? m.rows.length : 0) - rows.length) + (parseInt(m.unread, 10) || 0);
+  // the whole cart was read (so what is missing from it has left it): Superbuy's own layout only
+  const full = !!m.full;
+  if (!rows.length && !(full && m.empty)) return { ok: false, message: 'RepHop could not read any listing in this cart.' };
+  const before = await get('items', {});
+  const had = new Set(rows.filter((r) => findKey(before, r.key)).map((r) => r.key));
+  const ctx = { site, postTitle: 'Your ' + name + ' cart', postUrl: cartUrl };
+  const saved = rows.length ? await saveEntries(rows.map((r) => ({ url: r.url, ctx }))) : { failed: 0 };
+  const sum = { lines: rows.length, fresh: 0, picks: 0, updated: 0, already: 0, full: 0, failed: saved.failed + unread };
+  const present = new Set((Array.isArray(m.present) ? m.present : []).filter((k) => typeof k === 'string').slice(0, 300));
+  const since = Number(m.since) || 0;
+  const ignore = await get('cartStaleIgnore', {});
+  const ignored = (key, pick) => Date.now() - (ignore[key + '|' + pick] || 0) < 30 * DAY;
+  let stale = [];
+  await mutateItems((items) => {
+    const used = new Map(); // item -> its picks this import has filled ('' is the item's own)
+    let changed = false;
+    const now = Date.now();
+    for (const r of rows) {
+      const k = findKey(items, r.key);
+      const it = k && items[k];
+      if (!it) continue;
+      const taken = used.get(it.key) || new Set();
+      used.set(it.key, taken);
+      const picked = U.skuOptions(r.sku, (it.choices || []).map((c) => c.n));
+      const more = U.cleanMore(it.more);
+      const fits = (opts) => (picked.length ? samePick(opts || [], picked) : !(opts || []).length);
+      let pick = null;
+      let created = false;
+      if (!taken.has('') && fits(it.options)) pick = '';
+      else {
+        const p = more.find((x) => !taken.has(x.id) && fits(x.options));
+        if (p) pick = p.id;
+      }
+      // nothing from this listing was in the cart yet: the cart's choice is the item's own
+      if (pick == null && !taken.has('') && it.status === 'saved' && !more.length) pick = '';
+      if (pick == null) {
+        if (more.length >= U.MAX_MORE) {
+          sum.full++;
+          continue;
+        }
+        pick = Math.random().toString(36).slice(2, 10).padEnd(6, '0');
+        more.push({ id: pick, options: [], qty: 1, status: 'saved' });
+        created = true;
+      }
+      taken.add(pick);
+      const target = pick ? more.find((x) => x.id === pick) : it;
+      const was = JSON.stringify([target.options || [], target.qty || 1, target.status]);
+      if (picked.length) target.options = picked;
+      target.qty = r.qty;
+      if (target.status !== 'bought') target.status = 'carted';
+      if (pick) it.more = more;
+      const now2 = JSON.stringify([target.options || [], target.qty || 1, target.status]);
+      if (!had.has(r.key)) sum.fresh++;
+      else if (created) sum.picks++;
+      else if (was === now2) sum.already++;
+      else sum.updated++;
+      if (was !== now2) {
+        changed = true;
+        it.updatedAt = now;
+      }
+      // what the cart knows that the list does not yet
+      const fill = (f, v) => {
+        if (it[f] || v == null || v === '') return;
+        it[f] = v;
+        changed = true;
+      };
+      if (!it.customTitle) fill('title', r.title);
+      fill('price', r.price);
+      fill('image', r.image);
+      fill('note', r.note);
+    }
+    if (full) {
+      // In cart in the list, but not in the cart: you are asked (bought? back to saved?), nothing is changed here.
+      for (const it of Object.values(items)) {
+        if (it.platform === 'yupoo' || present.has(it.key) || (it.aliases || []).some((a) => present.has(a))) continue;
+        const taken = used.get(it.key);
+        // marked after this cart page was drawn: the page cannot know about it yet
+        if (!taken && since && it.updatedAt > since) continue;
+        const label = (opts) => U.displayTitle(it) + (opts && opts.length ? ' (' + opts.map((o) => o.v).join(' · ') + ')' : '');
+        if (it.status === 'carted' && !(taken && taken.has('')) && !ignored(it.key, '')) stale.push({ key: it.key, pick: '', title: label(it.options) });
+        for (const p of U.cleanMore(it.more)) {
+          if (p.status === 'carted' && !(taken && taken.has(p.id)) && !ignored(it.key, p.id)) stale.push({ key: it.key, pick: p.id, title: label(p.options) });
+        }
+      }
+      stale = stale.slice(0, 100);
+    }
+    return changed ? true : SKIP;
+  });
+  const changed = sum.fresh + sum.picks + sum.updated > 0;
+  return { ok: true, sum, stale, agent: name, changed, message: describeCartImport(sum, name, !!m.auto) };
+}
+
+function describeCartImport(sum, name, auto) {
+  if (!sum.lines) return '';
+  const n = (x, one, many) => x + ' ' + (x === 1 ? one : many);
+  const parts = [];
+  if (sum.fresh) parts.push(sum.fresh + ' new');
+  if (sum.picks) parts.push(n(sum.picks, 'more colour or size', 'more colours or sizes') + ' of things you had saved');
+  if (sum.updated) parts.push(sum.updated + ' updated');
+  if (sum.already) parts.push(sum.already + ' already there');
+  const changed = sum.fresh || sum.picks || sum.updated;
+  let msg = changed && auto
+    ? 'Synced with your ' + name + ' cart: ' + n(sum.lines, 'item', 'items') + ' marked In cart' + (parts.length ? ' (' + parts.join(', ') + ')' : '') + '.'
+    : (changed ? 'Your ' + name + ' cart is in your list, marked In cart: ' : 'Your list already has everything in this cart: ') + n(sum.lines, 'item', 'items') + (parts.length ? ' (' + parts.join(', ') + ')' : '') + '.';
+  if (sum.failed) msg += ' ' + n(sum.failed, 'item', 'items') + ' could not be read.';
+  if (sum.full) msg += ' ' + n(sum.full, 'item was', 'items were') + ' left out: a listing can hold 10 picks.';
+  return msg;
+}
+
+/** Your answer about things marked In cart that have left the cart: bought, back to saved, or leave them be. */
+async function cartStale(m) {
+  const list = (Array.isArray(m.list) ? m.list : []).slice(0, 300).filter((x) => x && typeof x.key === 'string').map((x) => ({ key: x.key, pick: typeof x.pick === 'string' ? x.pick : '' }));
+  if (!list.length) return { ok: false };
+  if (m.op === 'leave') {
+    // not asked again about these for a month
+    await mutate('cartStaleIgnore', {}, (ig) => {
+      const now = Date.now();
+      for (const x of list) ig[x.key + '|' + x.pick] = now;
+      for (const k of Object.keys(ig)) if (now - ig[k] > 30 * DAY) delete ig[k];
+    });
+    return { ok: true };
+  }
+  const status = m.op === 'bought' ? 'bought' : 'saved';
+  const r = await mutateItems((items) => {
+    let n = 0;
+    for (const x of list) {
+      const k = findKey(items, x.key);
+      const it = k && items[k];
+      if (!it) continue;
+      const more = U.cleanMore(it.more);
+      const target = x.pick ? more.find((p) => p.id === x.pick) : it;
+      if (!target || target.status !== 'carted') continue;
+      target.status = status;
+      if (x.pick) it.more = more;
+      it.updatedAt = Date.now();
+      n++;
+    }
+    return n ? { ok: true, count: n } : SKIP;
+  });
+  return r || { ok: true, count: 0 };
+}
+
+/**
+ * Mark items as in your cart (or bought, or saved) without RepHop adding anything: for things you added at the
+ * agent yourself. With `all` every pick on the item is marked too; marking In cart never undoes Bought. Returns what
+ * each was before, which `restore` puts back (Undo).
+ */
+function markItems(m) {
+  return mutateItems((items) => {
+    if (m.restore && typeof m.restore === 'object') {
+      let n = 0;
+      for (const [key, b] of Object.entries(m.restore).slice(0, 2000)) {
+        const it = items[key];
+        if (!it || !b || typeof b !== 'object') continue;
+        if (U.STATUSES[b.s]) it.status = b.s;
+        const more = U.cleanMore(it.more);
+        for (const p of more) if (b.m && U.STATUSES[b.m[p.id]]) p.status = b.m[p.id];
+        if (more.length) it.more = more;
+        it.updatedAt = Date.now();
+        n++;
+      }
+      return n ? { ok: true, count: n } : SKIP;
+    }
+    const status = U.STATUSES[m.status] ? m.status : null;
+    if (!status) return SKIP;
+    const before = {};
+    let n = 0;
+    for (const key of (Array.isArray(m.keys) ? m.keys : []).slice(0, 2000)) {
+      const k = findKey(items, String(key));
+      const it = k && items[k];
+      if (!it || it.platform === 'yupoo') continue;
+      const more = U.cleanMore(it.more);
+      const ids = typeof m.pick === 'string' && m.pick ? [m.pick] : m.all ? [''].concat(more.map((p) => p.id)) : [''];
+      let touched = false;
+      for (const id of ids) {
+        const target = id ? more.find((p) => p.id === id) : it;
+        if (!target || target.status === status || (status === 'carted' && target.status === 'bought')) continue;
+        if (!touched) before[it.key] = { s: it.status || 'saved', m: Object.fromEntries(more.map((p) => [p.id, p.status])) };
+        touched = true;
+        target.status = status;
+        n++;
+      }
+      if (!touched) continue;
+      if (more.length) it.more = more;
+      it.updatedAt = Date.now();
+    }
+    return n ? { ok: true, count: n, before } : SKIP;
+  });
 }
 
 function recordSeen(entries) {
@@ -1340,7 +1716,7 @@ async function groupOp(m) {
       if (typeof p.me === 'string') g.me = p.me.replace(/\s+/g, ' ').trim().slice(0, 30);
       if (typeof p.mine === 'string') g.mine = p.mine.slice(0, 30);
       if ('extra' in p) g.extra = Math.max(0, Math.min(1e6, Math.round((parseFloat(p.extra) || 0) * 100) / 100));
-      if (p.split === 'even' || p.split === 'cost') g.split = p.split;
+      if (p.split === 'even' || p.split === 'cost' || p.split === 'weight') g.split = p.split;
       out = { ok: true, sid: g.sid };
       return true;
     }
@@ -1414,7 +1790,7 @@ function cleanNote(raw) {
   return {
     host: cleanName(raw.host), cur: /^[A-Z]{3}$/.test(raw.cur || '') ? raw.cur : 'CNY', marks,
     yuan: num(raw.yuan), items: num(raw.items), share: num(raw.share), owes: num(raw.owes), extra: num(raw.extra),
-    split: raw.split === 'cost' ? 'cost' : 'even', people: Math.max(1, Math.min(99, parseInt(raw.people, 10) || 1)), at: num(raw.at) || 0,
+    split: raw.split === 'cost' || raw.split === 'weight' ? raw.split : 'even', people: Math.max(1, Math.min(99, parseInt(raw.people, 10) || 1)), at: num(raw.at) || 0,
   };
 }
 
@@ -1457,7 +1833,7 @@ async function pushNotes() {
   const settings = U.mergeSettings(data.settings);
   const mine = withPicks(haulItems(data.items, g.mine == null ? '*' : g.mine));
   const people = (mine.length ? [{ id: '', name: live.name, items: mine }] : []).concat(g.people);
-  const tot = U.groupTotals(people, data.rates, settings.currency, g.extra || 0, g.split);
+  const tot = U.groupTotals(people, data.rates, settings.currency, g.extra || 0, g.split, settings);
   const sent = {};
   for (let i = 0; i < people.length; i++) {
     const p = people[i];
@@ -1466,7 +1842,7 @@ async function pushNotes() {
     const row = tot.rows[i];
     const note = {
       host: live.name, cur: settings.currency, marks: p.items.map((it) => [it.key, it.status || 'saved', it.qty || 1]),
-      yuan: row.yuan, items: row.items, share: row.share, owes: row.owes, extra: tot.extra, split: g.split === 'cost' ? 'cost' : 'even', people: people.length,
+      yuan: row.yuan, items: row.items, share: row.share, owes: row.owes, extra: tot.extra, split: g.split === 'cost' || g.split === 'weight' ? g.split : 'even', people: people.length, grams: row.grams,
     };
     const hash = U.textHash(JSON.stringify(note));
     if ((live.sent || {})[p.live] === hash) continue;
@@ -1871,7 +2247,15 @@ const handlers = {
   save: (m) => saveEntries([{ url: m.url, key: m.key, ctx: m.ctx, label: m.label, options: m.options }], m.folder).then((st) => Object.assign(st, { ok: st.keys.length > 0, key: st.keys[0], message: describeSave(st) })),
   saveMany: (m) => saveEntries(m.entries, m.folder).then((st) => Object.assign(st, { message: describeSave(st) })),
   describe: (m) => describe(m),
-  lookup: (m) => lookup(m.keys),
+  lookup: (m) => lookup(m.keys, typeof m.detail === 'string' ? m.detail : ''),
+  cartByHand: (m) => cartByHand(m).then((r) => r || { ok: false }),
+  importCart: (m, s) => importCart(m, s),
+  cartStale: (m) => cartStale(m),
+  mark: (m) => markItems(m).then((r) => r || { ok: true, count: 0 }),
+  importCartTab: () => importCartTab(),
+  photoInfo: (m) => photoInfo(m),
+  fetchPics: (m) => fetchPics(m),
+  loadMatcher: (m, s) => loadMatcher(s),
   seen: (m) => recordSeen(m.entries).then(() => ({ ok: true })),
   update: (m) => updateItems(m.keys || [m.key], m.patch || {}).then((r) => r || { ok: true, count: 0 }),
   pick: (m) => pickOp(m).then((r) => r || { ok: false }),
@@ -1913,8 +2297,12 @@ const handlers = {
   queue: (m, s) => queueOp(m, s.tab),
   whoami: async (m, s) => {
     const tabId = s.tab ? s.tab.id : null;
-    const back = tabId != null ? ((await chrome.storage.session.get('backTo')).backTo || {})[tabId] : null;
-    return { tabId, back: back ? back.label || 'post' : null };
+    const ses = tabId != null ? await chrome.storage.session.get(['backTo', 'cartImport']) : {};
+    const back = (ses.backTo || {})[tabId];
+    const ci = ses.cartImport;
+    // the list opened this tab to copy the cart in (still wanted after you sign in, for a while)
+    const cartImport = !!(ci && ci.tabId === tabId && Date.now() - ci.at < 20 * 60000);
+    return { tabId, back: back ? back.label || 'post' : null, cartImport };
   },
   // The agent page's "Back to …" button: the tab the listing was opened from, or that page again if it was closed.
   goBack: async (m, s) => {
