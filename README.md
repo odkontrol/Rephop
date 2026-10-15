@@ -1,7 +1,3 @@
-
-
-
-
 # RepHop
 
 Click a Weidian, Taobao, 1688 or Yupoo link on Reddit and land on the listing at your shopping agent. Save finds to a list instead of juggling tabs, pick each one's colour and size right in the list, and have them added to your cart. Buying as a group? Friends send their lists and one person orders for everyone.
@@ -19,14 +15,7 @@ No copying, no pasting, and one tab that gets reused instead of a new tab per li
 
 Requires Chrome 116 or newer. Stay signed in to your agent: Superbuy, for one, only shows a listing when you are logged in.
 
-
-
-https://github.com/user-attachments/assets/1eeaec90-efa6-49d2-9d76-41551fb1ed3a
-
-
-
-**Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the 
-reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
+**Updating:** replace the files in that same folder, then open the RepHop list. Chrome keeps running the old copy of an unpacked extension until it is reloaded, so the list checks for that and restarts RepHop by itself (or press the reload arrow on RepHop's card at `chrome://extensions`). Afterwards reload any Reddit or agent tab that was already open. The build number is at the bottom of Help.
 
 ## What it does
 
@@ -72,23 +61,21 @@ Only your own clicks and key presses count. The hotkeys act on a link your mouse
 - Optional sync between your computers through the browser's own sync.
 - Dark by default; the sun button in the corner switches to light.
 
-
-
-https://github.com/user-attachments/assets/1eeb8571-758f-4990-882e-a525ac564415
-
-
-
 **Already on your agent's site?**
 
 A listing there has a **Save to RepHop** button in the corner bar. So does a right-click on the page, `Alt+Shift+K`, and a strip at the top of the list. Saving with the corner button or the strip also remembers any colour or size you clicked on the listing (not the ones the site had pre-selected).
+
+A listing you opened from a Reddit post also has **← Back to r/…** in that bar. It switches back to the tab with the post, or opens the post again if you closed that tab.
 
 ## Colours, sizes and Add to cart
 
 Every card in the list shows a drop-down for each row of choices its listing offers (colour, size, style…) and an **Add to cart** button. Nothing has to be selected first.
 
+**More than one thing from the same listing** (the top and the trousers of a set, or two colourways): press **+ Another colour or size** on the card. Each pick gets its own drop-downs, quantity and Add to cart; the card's own Add to cart adds every pick not yet in your cart, one after the other. Picks count in the total, in share codes and in group hauls.
+
 **Where the drop-downs come from**
 
-- Weidian items get theirs as soon as they are saved, straight from Weidian, in the seller's own wording. Common Chinese words are shown with a translation (`黑色 · Black`, `M码 · M`).
+- Weidian items get theirs as soon as they are saved, straight from Weidian, in the seller's own wording. Common Chinese words are shown with a translation (`黑色 · Black`, `M码 · M`). Once you open the listing at your agent, the drop-downs switch to the agent's wording. A pick made in Chinese is still found on the agent's translated listing, even when the agent lists the choices in another order: by the same model code (`暗紫色U9060BCG` is `Dark purple U9060BCG`), or by a word RepHop translates.
 - Taobao and 1688 have no public lookup, so their drop-downs appear after you have opened the listing at your agent once. From then on the wording is the agent's own.
 - Size rows fill themselves in from **your sizes** (the welcome screen, or Settings → My sizes: shoes, tops, bottoms, belts, hats). The item's type is worked out from its name and can be set by hand under **Edit**. Choose another size in the drop-down to override it for one item.
 

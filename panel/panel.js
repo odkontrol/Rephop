@@ -225,8 +225,9 @@
 
     const meta = h('div', { class: 'meta' });
     if (it.price != null) {
-      meta.append(h('span', { class: 'price' }, U.yuan(it.price) + ((it.qty || 1) > 1 ? ' × ' + it.qty : '')));
-      if (conv != null && s.currency !== 'CNY') meta.append(h('span', {}, '≈ ' + U.money(conv * (it.qty || 1), s.currency)));
+      const all = U.totalQty(it);
+      meta.append(h('span', { class: 'price' }, U.yuan(it.price) + (all > 1 ? ' × ' + all : '')));
+      if (conv != null && s.currency !== 'CNY') meta.append(h('span', {}, '≈ ' + U.money(conv * all, s.currency)));
     }
     meta.append(h('span', { class: 'badge', title: it.url }, (L.PLATFORMS[it.platform] || {}).label || it.platform));
     if (it.platform === 'yupoo') {
@@ -267,7 +268,7 @@
           await send({ type: 'update', keys: [it.key], patch: { status: 'saved' } });
           toast('Unmarked. Your cart at ' + agent.name + ' was not changed.', { action: { label: 'Undo', fn: () => send({ type: 'update', keys: [it.key], patch: { status: 'carted' } }) } });
         } }, '✓ In cart')
-      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Open this at ' + agent.name + ', set its options and press Add To Cart', onclick: () => addOne(it) }, adding ? 'Adding…' : 'Add to cart');
+      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Open this at ' + agent.name + ', set its options and press Add To Cart' + ((it.more || []).some((p) => p.status === 'saved') ? ' (and the other picks still to add)' : ''), onclick: () => addOne(it) }, adding ? 'Adding…' : 'Add to cart');
     const acts = h('div', { class: 'acts' },
       h('button', { class: 'go primary', type: 'button', onclick: (e) => openItem(it, e), onauxclick: (e) => e.button === 1 && openItem(it, e) }, it.platform === 'yupoo' ? 'Open album' : 'Open in ' + agent.name),
       it.platform !== 'yupoo' && h('button', { type: 'button', title: 'Look for QC photos of this item', onclick: () => send({ type: 'openTab', url: L.qcUrl(it, s) }) }, 'QC'),
@@ -281,6 +282,10 @@
           onchange: (e) => { e.target.checked ? view.selected.add(it.key) : view.selected.delete(it.key); renderChrome(); } }),
         thumb(it), info),
       choiceRow(it),
+      (it.more || []).length ? h('div', { class: 'picks' }, it.more.map((p, n) => pickRow(it, p, n))) : null,
+      it.platform !== 'yupoo' && (it.choices || []).length && (it.more || []).length < U.MAX_MORE
+        ? h('button', { type: 'button', class: 'add-pick', title: 'Want two colours, or the top and the trousers of a set? Add another pick from this listing.', onclick: () => addPick(it) }, '+ Another colour or size')
+        : null,
       acts);
     li.dataset.key = it.key;
     if (isOpen) li.append(editor(it));
@@ -395,16 +400,20 @@
     return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
   }
 
-  /** What RepHop would choose for an item, row by row, from its drop-downs, the item's own size and colour, and your sizes. */
-  function planFor(it) {
+  /**
+   * What RepHop would choose for an item, row by row, from its drop-downs, the item's own size and colour, and your sizes.
+   * `pick` is one of the item's other picks (another colour from the same listing); without it, the first pick.
+   */
+  function planFor(it, pick) {
     const groups = (it.choices || []).map((c) => ({ name: c.n, options: c.o.map((t) => ({ text: t })) }));
-    return { groups, plan: U.planCart(groups, { options: it.options || [], size: U.sizeFor(it, data.settings), style: it.style || '', source: it.wd || [] }) };
+    const options = pick ? pick.options || [] : it.options || [];
+    return { groups, plan: U.planCart(groups, { options, size: U.sizeFor(it, data.settings), style: pick ? '' : it.style || '', source: it.wd || [] }) };
   }
 
-  /** The drop-downs for a listing's choices (colour, size…). Changing one stores your pick with the item. */
-  function choiceRow(it) {
+  /** The drop-downs for a listing's choices (colour, size…). Changing one stores your pick with the item (or with `pick`). */
+  function choiceRow(it, pick) {
     if (it.platform === 'yupoo') return null;
-    const { groups, plan } = planFor(it);
+    const { groups, plan } = planFor(it, pick);
     if (!groups.length) {
       // Taobao and 1688 only tell us their choices on the agent's listing.
       if (it.platform === 'weidian' || it.status !== 'saved' || (it.options || []).length) return null;
@@ -423,9 +432,10 @@
         onchange: (e) => {
           const v = e.target.value;
           // Replace whatever decided this row before, then store the new pick under the row's own name.
-          let next = (it.options || []).filter((o, i) => i !== row.from && !(o.n && norm(o.n) === norm(g.name)));
+          let next = ((pick ? pick.options : it.options) || []).filter((o, i) => i !== row.from && !(o.n && norm(o.n) === norm(g.name)));
           if (v !== '') next = next.concat({ n: g.name, v: g.options[Number(v)].text });
-          send({ type: 'update', keys: [it.key], patch: { options: next } });
+          if (pick) send({ type: 'pick', op: 'set', key: it.key, id: pick.id, patch: { options: next } });
+          else send({ type: 'update', keys: [it.key], patch: { options: next } });
         },
       },
         h('option', { value: '' }, label + '…'),
@@ -467,23 +477,77 @@
     return true;
   }
 
-  /** The Add to cart button on a card. */
-  function addOne(it) {
-    const { groups, plan } = planFor(it);
-    const open = groups.filter((g, gi) => plan.rows[gi].pick == null).map((g) => U.groupLabel(g.name).toLowerCase());
+  /** The steps that add an item: its first pick (unless it is already in the cart) and each other pick still to add. */
+  function cartSteps(it, onlyPick) {
+    const steps = [];
+    if (!onlyPick && it.status === 'saved') steps.push({ pick: null });
+    for (const p of it.more || []) if (p.status === 'saved' && (!onlyPick || onlyPick === p)) steps.push({ pick: p });
+    return steps;
+  }
+
+  /** The Add to cart button on a card, or on one of its other picks. */
+  function addOne(it, onlyPick) {
+    const steps = cartSteps(it, onlyPick);
+    if (!steps.length) return;
+    const keys = steps.map(() => it.key);
+    const owner = steps.some((x) => x.pick) ? steps.map((x) => (x.pick ? { v: x.pick.id } : null)) : null;
+    const what = steps.length === 1 ? 'it' : steps.length + ' picks of it';
     // Better to say so here than to open the listing and stop there.
-    if (open.length) {
-      return toast('Choose the ' + open.join(' and ') + ' first, in the drop-down on this item.', { error: true, action: { label: 'Add anyway', fn: () => runCart([it.key], null, 'it') } });
+    const open = new Set();
+    for (const x of steps) {
+      const { groups, plan } = planFor(it, x.pick);
+      groups.forEach((g, gi) => plan.rows[gi].pick == null && open.add(U.groupLabel(g.name).toLowerCase()));
     }
-    return runCart([it.key], null, 'it');
+    if (open.size) {
+      return toast('Choose the ' + Array.from(open).join(' and ') + ' first, in the drop-downs on this item.', { error: true, action: { label: 'Add anyway', fn: () => runCart(keys, owner, what) } });
+    }
+    return runCart(keys, owner, what);
+  }
+
+  /** A second (third…) choice from the same listing: starts with the size you picked, the rest to choose. */
+  async function addPick(it) {
+    const groups = (it.choices || []).map((c) => ({ name: c.n, options: c.o.map((t) => ({ text: t })) }));
+    const sizeRows = new Set(groups.filter((g) => U.isSizeGroup(g.name, g.options)).map((g) => norm(g.name)));
+    const options = (it.options || []).filter((o) => o.n && sizeRows.has(norm(o.n)));
+    const r = await send({ type: 'pick', op: 'add', key: it.key, options });
+    if (!r || !r.ok) toast('This item already has ' + (U.MAX_MORE + 1) + ' picks.', { error: true });
+  }
+
+  /** One of an item's other picks: its drop-downs, how many, and its own Add to cart / In cart / remove. */
+  function pickRow(it, p, n) {
+    const q = data.queue;
+    const adding = !!(q && q.active && q.auto && q.keys[q.i] === it.key && Array.isArray(q.owner) && q.owner[q.i] && q.owner[q.i].v === p.id);
+    const set = (patch) => send({ type: 'pick', op: 'set', key: it.key, id: p.id, patch });
+    const btn = p.status === 'bought' ? h('button', { type: 'button', class: 'on', title: 'Marked as bought. Click to unmark it.', onclick: () => set({ status: 'saved' }) }, '✓ Bought')
+      : p.status === 'carted' ? h('button', { type: 'button', class: 'on', 'aria-pressed': 'true', title: 'In your cart. Click to unmark it (your cart itself is not changed).', onclick: () => set({ status: 'saved' }) }, '✓ In cart')
+      : h('button', { type: 'button', class: 'cart', disabled: adding, title: 'Add this pick to your cart at ' + agent.name, onclick: () => addOne(it, p) }, adding ? 'Adding…' : 'Add to cart');
+    return h('div', { class: 'pick-row', 'data-pick': p.id },
+      h('div', { class: 'pick-head' },
+        h('span', { class: 'pick-n' }, 'Pick ' + (n + 2)),
+        h('label', { class: 'pick-qty', title: 'How many of this pick' }, '×', h('input', { type: 'number', min: '1', max: '99', step: '1', value: String(p.qty || 1), 'aria-label': 'How many of pick ' + (n + 2), onchange: (e) => set({ qty: e.target.value }) })),
+        btn,
+        h('button', { type: 'button', class: 'pick-x', title: 'Remove this pick (you can undo)', 'aria-label': 'Remove pick ' + (n + 2), onclick: async () => {
+          const r = await send({ type: 'pick', op: 'remove', key: it.key, id: p.id });
+          if (r && r.removed) toast('Pick removed.', { action: { label: 'Undo', fn: () => send({ type: 'pick', op: 'restore', key: it.key, id: r.removed.id, pick: r.removed }) } });
+        } }, '×')),
+      choiceRow(it, p));
   }
 
   /** Add several items, one after the other. */
   async function startCart(list) {
-    const items = list.filter((it) => it.platform !== 'yupoo' && it.status === 'saved');
+    const items = list.filter((it) => it.platform !== 'yupoo' && cartSteps(it).length);
     const left = list.length - items.length;
     if (!items.length) return toast(left ? 'Nothing to add: these are already marked as in your cart or bought, or are albums with no listing.' : 'Select some items first.', { error: true });
-    const ok = await runCart(items.map((it) => it.key), null, items.length === 1 ? 'it' : items.length + ' items' + (left ? ' (' + left + ' left out: already in cart, bought, or no listing)' : ''));
+    const keys = [];
+    const owner = [];
+    for (const it of items) {
+      for (const x of cartSteps(it)) {
+        keys.push(it.key);
+        owner.push(x.pick ? { v: x.pick.id } : null);
+      }
+    }
+    const extra = keys.length > items.length ? ' (' + keys.length + ' picks)' : '';
+    const ok = await runCart(keys, owner.some(Boolean) ? owner : null, keys.length === 1 ? 'it' : items.length + ' items' + extra + (left ? ' (' + left + ' left out: already in cart, bought, or no listing)' : ''));
     if (ok) view.selected.clear();
   }
 
@@ -519,7 +583,7 @@
     let unpriced = 0;
     for (const it of sc.list) {
       if (it.price == null) unpriced++;
-      else sum += it.price * (it.qty || 1);
+      else sum += it.price * U.totalQty(it);
     }
     const conv = U.convert(sum, data.rates, s.currency);
     $('#count').textContent = sc.list.length === vis.length ? vis.length + (vis.length === 1 ? ' item' : ' items') : sc.label;
@@ -653,15 +717,22 @@
     const g = data.group || {};
     const mine = g.mine == null ? '*' : g.mine;
     if (mine === '') return [];
-    return Object.values(data.items).filter((it) => it.platform !== 'yupoo' && it.status !== 'bought' && (mine === '*' || it.folder === mine)).sort(SORTS.new);
+    return Object.values(data.items).filter((it) => it.platform !== 'yupoo' && (it.status !== 'bought' || (it.more || []).some((p) => p.status !== 'bought')) && (mine === '*' || it.folder === mine)).sort(SORTS.new);
   }
 
   /** Everyone in the haul, you first: [{ id, name, you, items }] with every item in the same shape. */
   function groupPeople() {
     const g = data.group || {};
     const out = [];
-    const mine = myHaul().map((it) => ({ own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, qty: it.qty || 1, options: it.options || [],
-      size: U.sizeFor(it, data.settings), style: it.style || '', note: it.note || '', status: it.status, image: it.image }));
+    const mine = [];
+    for (const it of myHaul()) {
+      const base = { own: it, key: it.key, platform: it.platform, id: it.id, title: U.displayTitle(it), price: it.price, size: U.sizeFor(it, data.settings), image: it.image };
+      if (it.status !== 'bought') mine.push(Object.assign({}, base, { qty: it.qty || 1, options: it.options || [], style: it.style || '', note: it.note || '', status: it.status }));
+      // Each other pick from the same listing counts as its own item in the haul.
+      for (const pick of it.more || []) {
+        if (pick.status !== 'bought') mine.push(Object.assign({}, base, { pick, qty: pick.qty || 1, options: pick.options || [], style: '', note: '', status: pick.status }));
+      }
+    }
     if (mine.length) out.push({ id: '', name: g.me ? g.me + ' (you)' : 'You', you: true, items: mine });
     for (const p of g.people || []) out.push({ id: p.id, name: p.name, at: p.at, you: false, live: p.live || '', items: p.items || [] });
     return out;
@@ -694,7 +765,7 @@
   }
 
   function entryFor(p, it) {
-    return { key: it.key, owner: p.you ? null : { p: p.id, x: it.uid } };
+    return { key: it.key, owner: p.you ? (it.pick ? { v: it.pick.id } : null) : { p: p.id, x: it.uid } };
   }
 
   function groupItem(p, it, tagged) {
@@ -710,7 +781,8 @@
       if (conv != null && s.currency !== 'CNY') meta.append(h('span', {}, '≈ ' + U.money(conv * (it.qty || 1), s.currency)));
     } else meta.append(h('span', { class: 'badge', title: 'Open the listing once and the price is filled in' }, 'No price yet' + ((it.qty || 1) > 1 ? ' · × ' + it.qty : '')));
     if (picks) meta.append(h('span', { class: 'badge picked', title: 'What ' + (p.you ? 'you' : p.name) + ' picked' }, picks));
-    const mark = (status) => (p.you ? send({ type: 'update', keys: [it.key], patch: { status } }) : send({ type: 'group', op: 'mark', id: p.id, uid: it.uid, status }));
+    const mark = (status) => (p.you && it.pick ? send({ type: 'pick', op: 'set', key: it.key, id: it.pick.id, patch: { status } })
+      : p.you ? send({ type: 'update', keys: [it.key], patch: { status } }) : send({ type: 'group', op: 'mark', id: p.id, uid: it.uid, status }));
     const cart = done
       ? h('button', { type: 'button', class: 'on', title: 'Marked as in the cart. Click to unmark it (the cart itself is not changed).', onclick: () => mark('saved') }, it.status === 'bought' ? '✓ Bought' : '✓ In cart')
       : h('button', { type: 'button', class: 'cart', title: 'Add this to your cart with ' + (p.you ? 'your' : p.name + '’s') + ' choices', onclick: () => groupCart([entryFor(p, it)], p.you ? 'it' : p.name + '’s item') }, 'Add to cart');

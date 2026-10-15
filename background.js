@@ -442,6 +442,14 @@ function applyPreview(it, p, fresh) {
           changed = true;
         }
       }
+      for (const pick of fromAgent && p.choices.length && Array.isArray(it.more) ? it.more : []) {
+        if (!pick.options || !pick.options.length) continue;
+        const next = rewordPicks(pick.options, p.choices, it.wd || []);
+        if (JSON.stringify(next) !== JSON.stringify(pick.options)) {
+          pick.options = next;
+          changed = true;
+        }
+      }
     }
     if (!it.optsAt) {
       it.optsAt = Date.now();
@@ -516,9 +524,39 @@ function reusable(tab, lastUrl) {
 // Opens run one at a time, so two quick clicks cannot both decide "there is no agent tab yet".
 let openChain = Promise.resolve();
 function openUrl(url, settings, disposition, srcTab) {
-  const p = openChain.then(() => openUrlNow(url, settings, disposition, srcTab));
+  const p = openChain.then(() => openUrlNow(url, settings, disposition, srcTab)).then(async (tabId) => {
+    await noteBack(tabId, srcTab, settings).catch(() => {});
+    return tabId;
+  });
   openChain = p.catch(() => {});
   return p;
+}
+
+/** "r/sneakerreps" for a Reddit page, otherwise the site's name: what the agent page's back button says. */
+function backLabel(url) {
+  const u = L.toUrl(url);
+  if (!u) return '';
+  const sub = u.pathname.match(/^\/r\/([A-Za-z0-9_]+)/);
+  if (sub && L.hostMatches(u.hostname, ['reddit.com'])) return 'r/' + sub[1];
+  return u.hostname.replace(/^www\./, '');
+}
+
+/**
+ * Remembers which page a listing was opened from, so the agent page can offer a way back to it.
+ * A listing opened from the list or a queue has no page to go back to, so an older entry for that tab is dropped;
+ * a click made on the agent's own site keeps the entry it has.
+ */
+async function noteBack(tabId, srcTab, settings) {
+  if (tabId == null) return;
+  const { backTo = {} } = await chrome.storage.session.get('backTo');
+  const fromAgent = srcTab && isAgentPage(srcTab.url, settings);
+  if (srcTab && srcTab.id !== tabId && /^https?:/.test(srcTab.url || '') && !fromAgent) {
+    backTo[tabId] = { tabId: srcTab.id, url: srcTab.url, label: backLabel(srcTab.url), at: Date.now() };
+    const old = Object.keys(backTo).sort((a, b) => backTo[b].at - backTo[a].at).slice(30);
+    for (const k of old) delete backTo[k];
+  } else if (!fromAgent && backTo[tabId]) delete backTo[tabId];
+  else return;
+  await chrome.storage.session.set({ backTo });
 }
 
 async function openUrlNow(url, settings, disposition, srcTab) {
@@ -536,7 +574,11 @@ async function openUrlNow(url, settings, disposition, srcTab) {
     // Never navigate away the page the click came from, unless that page is the agent itself.
     if (tab && srcTab && tab.id === srcTab.id && !isAgentPage(srcTab.url, settings)) tab = null;
     if (tab) {
-      await chrome.tabs.update(tab.id, { url, active });
+      // The same address again (another pick from this listing): load it afresh, so that step starts on a new page.
+      if ((tab.url || tab.pendingUrl) === url) {
+        await chrome.tabs.reload(tab.id);
+        if (active) await chrome.tabs.update(tab.id, { active: true });
+      } else await chrome.tabs.update(tab.id, { url, active });
       if (active) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
     } else {
       tab = await chrome.tabs.create(Object.assign({ url, active }, beside));
@@ -838,6 +880,45 @@ function updateItems(keys, patch) {
   });
 }
 
+/**
+ * Another choice from the same listing: op 'add' (with starting options), 'set' (options, qty, status of one),
+ * 'remove' one, or 'restore' a removed one (undo).
+ */
+function pickOp(m) {
+  return mutateItems((items) => {
+    const k = findKey(items, String(m.key || ''));
+    const it = k && items[k];
+    if (!it || it.platform === 'yupoo') return SKIP;
+    let more = U.cleanMore(it.more);
+    let id = String(m.id || '');
+    if (m.op === 'add' || m.op === 'restore') {
+      if (more.length >= U.MAX_MORE) return SKIP;
+      if (m.op === 'add') id = Math.random().toString(36).slice(2, 10).padEnd(6, '0');
+      const pick = U.cleanMore([Object.assign({}, m.op === 'restore' ? m.pick : { options: m.options }, { id })])[0];
+      if (!pick || more.some((p) => p.id === pick.id)) return SKIP;
+      more.push(pick);
+    } else if (m.op === 'set') {
+      const pick = more.find((p) => p.id === id);
+      if (!pick) return SKIP;
+      const patch = m.patch || {};
+      if ('options' in patch) pick.options = U.cleanOptions(patch.options);
+      if ('qty' in patch) pick.qty = Math.max(1, Math.min(99, parseInt(patch.qty, 10) || 1));
+      if ('status' in patch && U.STATUSES[patch.status]) pick.status = patch.status;
+    } else if (m.op === 'remove') {
+      const pick = more.find((p) => p.id === id);
+      if (!pick) return SKIP;
+      more = more.filter((p) => p !== pick);
+      if (more.length) it.more = more;
+      else delete it.more;
+      it.updatedAt = Date.now();
+      return { ok: true, removed: pick };
+    } else return SKIP;
+    it.more = more;
+    it.updatedAt = Date.now();
+    return { ok: true, id };
+  });
+}
+
 function removeItems(keys) {
   return mutateItems((items, tombs) => {
     const removed = [];
@@ -892,6 +973,8 @@ function sanitizeItem(raw) {
   if (typeof raw.optsAt === 'number' && raw.optsAt > 0) it.optsAt = raw.optsAt;
   const wd = U.cleanChoices(raw.wd);
   if (wd.length) it.wd = wd;
+  const more = U.cleanMore(raw.more);
+  if (more.length) it.more = more;
   return it;
 }
 
@@ -1061,11 +1144,13 @@ async function queueOpNow(msg, srcTab) {
   };
   if (msg.op === 'start') {
     if (!L.agentInfo(await getSettings()).chosen) return { ok: false, reason: 'no-agent' };
-    // owner[i] says whose item step i is in a group haul: { p: person id, x: item id }, or null for your own.
+    // owner[i] says whose item step i is in a group haul: { p: person id, x: item id }; { v: pick id } for one of
+    // your item's other picks (a second colour from the same listing); null for your item's first pick.
     const pairs = (msg.keys || []).map((k, i) => [k, Array.isArray(msg.owner) ? msg.owner[i] : null]).filter(([k]) => typeof k === 'string' && L.keyToItem(k));
     if (!pairs.length) return { ok: false, reason: 'empty' };
     q = { keys: pairs.map((x) => x[0]), i: 0, active: true, auto: !!msg.auto, results: {}, pressed: {} };
-    if (pairs.some((x) => x[1])) q.owner = pairs.map((x) => (x[1] && typeof x[1].p === 'string' && typeof x[1].x === 'string' ? { p: x[1].p, x: x[1].x } : null));
+    const ownerOf = (o) => (o && typeof o.p === 'string' && typeof o.x === 'string' ? { p: o.p, x: o.x } : o && typeof o.v === 'string' && /^[a-z0-9]{4,12}$/.test(o.v) ? { v: o.v } : null);
+    if (pairs.some((x) => ownerOf(x[1]))) q.owner = pairs.map((x) => ownerOf(x[1]));
   } else if (!q || !q.active) {
     return { ok: false, reason: 'no-queue' };
   } else {
@@ -1304,8 +1389,18 @@ const cleanName = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().
 function haulItems(items, scope) {
   if (scope === '') return [];
   return Object.values(items || {})
-    .filter((it) => it.platform !== 'yupoo' && it.status !== 'bought' && (scope == null || scope === '*' || it.folder === scope))
+    .filter((it) => it.platform !== 'yupoo' && (it.status !== 'bought' || (it.more || []).some((p) => p.status !== 'bought')) && (scope == null || scope === '*' || it.folder === scope))
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+}
+
+/** Your items for the haul's totals: each other pick from a listing counts as an item of its own. */
+function withPicks(items) {
+  const out = [];
+  for (const it of items) {
+    if (it.status !== 'bought') out.push(it);
+    for (const p of it.more || []) if (p.status !== 'bought') out.push(Object.assign({}, it, { qty: p.qty || 1, options: p.options || [], status: p.status, more: undefined }));
+  }
+  return out;
 }
 
 /** What the host told a member, rebuilt from untrusted data. */
@@ -1360,7 +1455,7 @@ async function pushNotes() {
   const live = liveOf(g);
   if (!live || live.role !== 'host') return;
   const settings = U.mergeSettings(data.settings);
-  const mine = haulItems(data.items, g.mine == null ? '*' : g.mine);
+  const mine = withPicks(haulItems(data.items, g.mine == null ? '*' : g.mine));
   const people = (mine.length ? [{ id: '', name: live.name, items: mine }] : []).concat(g.people);
   const tot = U.groupTotals(people, data.rates, settings.currency, g.extra || 0, g.split);
   const sent = {};
@@ -1779,6 +1874,7 @@ const handlers = {
   lookup: (m) => lookup(m.keys),
   seen: (m) => recordSeen(m.entries).then(() => ({ ok: true })),
   update: (m) => updateItems(m.keys || [m.key], m.patch || {}).then((r) => r || { ok: true, count: 0 }),
+  pick: (m) => pickOp(m).then((r) => r || { ok: false }),
   remove: (m) => removeItems(m.keys || [m.key]).then((r) => r || { ok: true, removed: [] }),
   restore: (m) => restoreItems(m.items, false),
   importData: async (m) => {
@@ -1815,7 +1911,32 @@ const handlers = {
     return { ok: true, settings: next };
   },
   queue: (m, s) => queueOp(m, s.tab),
-  whoami: (m, s) => ({ tabId: s.tab ? s.tab.id : null }),
+  whoami: async (m, s) => {
+    const tabId = s.tab ? s.tab.id : null;
+    const back = tabId != null ? ((await chrome.storage.session.get('backTo')).backTo || {})[tabId] : null;
+    return { tabId, back: back ? back.label || 'post' : null };
+  },
+  // The agent page's "Back to …" button: the tab the listing was opened from, or that page again if it was closed.
+  goBack: async (m, s) => {
+    if (!s.tab) return { ok: false };
+    const back = ((await chrome.storage.session.get('backTo')).backTo || {})[s.tab.id];
+    if (!back) return { ok: false };
+    const src = await chrome.tabs.get(back.tabId).catch(() => null);
+    if (src) {
+      await chrome.tabs.update(src.id, { active: true });
+      await chrome.windows.update(src.windowId, { focused: true }).catch(() => {});
+      return { ok: true };
+    }
+    const u = L.toUrl(back.url);
+    if (!u || !/^https?:$/.test(u.protocol)) return { ok: false };
+    const tab = await chrome.tabs.create({ url: u.href, windowId: s.tab.windowId, index: s.tab.index + 1, active: true });
+    // The reopened page is where "back" leads from now on.
+    const st = await chrome.storage.session.get('backTo');
+    const backTo = st.backTo || {};
+    if (backTo[s.tab.id]) backTo[s.tab.id] = Object.assign({}, backTo[s.tab.id], { tabId: tab.id, at: Date.now() });
+    await chrome.storage.session.set({ backTo });
+    return { ok: true, reopened: true };
+  },
   // Answered by whichever copy of the background Chrome is running; the list compares it with its own.
   version: () => ({ ok: true, build: U.BUILD }),
   refresh: async (m) => {
@@ -1845,6 +1966,15 @@ const handlers = {
     const seen = (data.previews || {})[m.key] || {};
     const sellerRows = seen.wd || (seen.choicesFrom === 'weidian' ? seen.choices : null) || [];
     const ref = q && q.active && Array.isArray(q.owner) && q.keys[q.i] === m.key ? q.owner[q.i] : null;
+    if (ref && ref.v) {
+      // One of your item's other picks: its own choices and quantity, your size.
+      const items = data.items || {};
+      const it = items[findKey(items, m.key)];
+      const pick = it && Array.isArray(it.more) ? it.more.find((p) => p.id === ref.v) : null;
+      if (!pick) return { ok: false };
+      const settings = U.mergeSettings(data.settings);
+      return { ok: true, itemKey: it.key, options: pick.options || [], size: U.sizeFor(it, settings), style: it.style || '', qty: pick.qty || 1, kind: U.guessKind(it), source: it.wd || sellerRows };
+    }
     if (ref) {
       // A friend's item in a group haul: their choices and their size, never yours.
       const person = ((data.group && data.group.people) || []).find((p) => p.id === ref.p);
@@ -1863,6 +1993,7 @@ const handlers = {
     const q = await get('queue', null);
     const ref = q && q.active && Array.isArray(q.owner) && q.keys[q.i] === m.key ? q.owner[q.i] : null;
     const options = U.cleanOptions(m.options);
+    if (ref && ref.v) return pickOp({ op: 'set', key: m.key, id: ref.v, patch: Object.assign({ status: 'carted' }, options.length ? { options } : {}) }).then((r) => r || { ok: false });
     if (ref) return groupOp({ op: 'mark', id: ref.p, uid: ref.x, status: 'carted', options });
     const items = await get('items', {});
     const k = findKey(items, m.key);

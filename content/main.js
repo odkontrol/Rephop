@@ -184,6 +184,7 @@
       <div class="card" role="tooltip"><div class="top"><div class="pic"></div><div class="body"><div class="title"></div><div class="sub"></div><div class="price"></div><div class="tags"></div></div></div><div class="keys"></div></div>
       <div class="bar" role="toolbar" aria-label="RepHop">
         <button class="logo" data-act="toggle" title="Show or hide the RepHop bar" aria-label="Show or hide the RepHop bar">${ICON.bolt}</button>
+        <button data-act="back" hidden></button>
         <span class="q" hidden></span>
         <button data-act="qprev" hidden title="Previous item in the queue ( [ )">◀</button>
         <button data-act="qnext" class="primary" hidden title="Next item in the queue ( ] )">Next ▶</button>
@@ -964,13 +965,20 @@
   function paintBar() {
     const count = SCAN_PAGE ? inlineLinks().length : 0;
     const inQueue = queueHere();
-    const show = settings.showFab && alive && (pageItem || count > 0 || SHEETS_APP || inQueue);
+    const show = settings.showFab && alive && (pageItem || count > 0 || SHEETS_APP || inQueue || (IS_AGENT && backTo));
     $bar.classList.toggle('on', !!show);
     if (!show) return;
     // On a product page the bar is how you save the item, so it is never folded away there.
     $bar.classList.toggle('collapsed', fabCollapsed && !inQueue && !pageItem);
     const btn = (act) => $bar.querySelector('[data-act="' + act + '"]');
     const st = pageItem ? states[pageItem.key] || {} : {};
+
+    const back = btn('back');
+    back.hidden = !(IS_AGENT && backTo) || !!(inQueue && queue.auto && runHere());
+    if (!back.hidden) {
+      back.textContent = '← Back to ' + backTo;
+      back.title = 'Go back to the page you opened this from';
+    }
 
     const q = $bar.querySelector('.q');
     q.hidden = !inQueue;
@@ -1058,6 +1066,7 @@
       }
       paintBar();
     } else if (act === 'panel') send({ type: 'openPanel' });
+    else if (act === 'back') send({ type: 'goBack' });
     else if (act === 'open' && own) doOpen(own, ev.ctrlKey || ev.metaKey ? 'background' : 'reuse');
     else if (act === 'save' && own) toggleSave(own);
     else if (act === 'qc' && own) doQc(own);
@@ -1261,7 +1270,10 @@
         send({ type: 'pagePatch', key, title, price: price > 0 ? price : undefined, image });
         // The rows of choices arrive with the listing; give them a moment, then pass them on so the
         // list can offer them as drop-downs.
-        setTimeout(() => {
+        setTimeout(async () => {
+          if (!pageItem || pageItem.key !== key) return;
+          // A long row (more than 21 choices) keeps the rest behind "More": open it, or only part of the row is known.
+          if (foldedRows() && expandRows()) await sleep(400);
           if (!pageItem || pageItem.key !== key) return;
           const groups = optionGroups();
           if (groups && groups.length && !groups.some((g) => g.multi) && !foldedRows()) send({ type: 'pagePatch', key, title, choices: groups.map((g) => ({ n: g.name, o: g.options.map((o) => o.text) })) });
@@ -1296,6 +1308,7 @@
   const ADD_TEXT = /^\s*(add to cart|add to shopping cart|加入购物车)\s*$/i;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let myTabId = null; // which browser tab this is; an add-to-cart run only ever acts in its own tab
+  let backTo = null; // on an agent page RepHop opened: where the listing was opened from ("r/sneakerreps")
   // When this copy of the page started. A run acts only in a page that was opened for its current step.
   // The step's own stamp is also a Date.now(), taken in the background before the tab is pointed here.
   const BORN = Date.now();
@@ -1838,8 +1851,20 @@
     if (IS_AGENT) {
       send({ type: 'whoami' }).then((r) => {
         myTabId = r && typeof r.tabId === 'number' ? r.tabId : null;
+        backTo = r && typeof r.back === 'string' ? r.back : null;
         paintBar();
         autoCart();
+      });
+      // Coming back to this tab: the page it was opened from may have changed (or the tab was reused meanwhile).
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible' || !alive) return;
+        send({ type: 'whoami' }).then((r) => {
+          const next = r && typeof r.back === 'string' ? r.back : null;
+          if (next !== backTo) {
+            backTo = next;
+            paintBar();
+          }
+        });
       });
     }
     // Single-page apps (Reddit, the agents) change the address without loading a new page.
